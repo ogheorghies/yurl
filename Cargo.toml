@@ -1,0 +1,19 @@
+[package]
+name = "jurl"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+description = "JSON-driven HTTP client with shortcuts, flexible output routing, and rule-based middleware"
+keywords = ["http", "cli", "json", "curl", "rest"]
+categories = ["command-line-utilities", "web-programming::http-client"]
+
+[dependencies]
+argh = "0.1"
+base64 = "0.22"
+reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
+serde_json = "1"
+url = "2"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
