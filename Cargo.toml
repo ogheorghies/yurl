@@ -1,19 +1,33 @@
 [package]
-name = "jurl"
+name = "yurl"
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
-description = "JSON-driven HTTP client with shortcuts, flexible output routing, and rule-based middleware"
+description = "JSON-driven HTTP client with shortcuts, flexible output routing, rule-based middleware, concurrency, and streaming"
 keywords = ["http", "cli", "json", "curl", "rest"]
 categories = ["command-line-utilities", "web-programming::http-client"]
+repository = "https://github.com/ogheorghies/yurl"
 
 [dependencies]
 argh = "0.1"
 base64 = "0.22"
-reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
-serde_json = "1"
+futures-util = "0.3"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yml = "0.0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 url = "2"
+yttp = "0.0.1"
+
+[[bin]]
+name = "jurl"
+path = "src/main.rs"
+
+[[bin]]
+name = "yurl"
+path = "src/main.rs"
 
 [dev-dependencies]
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"

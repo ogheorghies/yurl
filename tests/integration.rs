@@ -33,9 +33,10 @@ fn parse_json(s: &str) -> serde_json::Value {
 fn default_output_has_b_h_s() {
     let out = jurl(r#"{"g": "https://httpbin.org/get"}"#);
     let json = parse_json(&out);
-    assert!(json["b"].is_string(), "b should be base64 string");
+    assert!(json["b"].is_object() || json["b"].is_string(), "b should be JSON object or string");
     assert!(json["h"].is_object(), "h should be headers object");
-    assert!(json["s"].as_str().unwrap().contains("200"), "s should contain 200");
+    assert!(json["s"].is_object(), "s should be status object");
+    assert_eq!(json["s"]["c"], 200);
 }
 
 #[test]
@@ -57,9 +58,9 @@ fn raw_status() {
 fn status_parts() {
     let out = jurl(r#"{"g": "https://httpbin.org/get", "1": "j(s.code,s.text,s.version)"}"#);
     let json = parse_json(&out);
-    assert_eq!(json["s"]["code"], 200);
-    assert_eq!(json["s"]["text"], "OK");
-    assert_eq!(json["s"]["version"], "HTTP/1.1");
+    assert_eq!(json["s"]["c"], 200);
+    assert_eq!(json["s"]["t"], "OK");
+    assert_eq!(json["s"]["v"], "HTTP/1.1");
 }
 
 // --- Method and URL atoms ---
@@ -101,23 +102,23 @@ fn post_case_insensitive() {
 
 #[test]
 fn form_urlencoded_full() {
-    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"Content-Type": "application/x-www-form-urlencoded"}, "b": {"user": "alice"}, "1": "b"}"#);
+    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"Content-Type": "application/x-www-form-urlencoded"}, "b": {"city": "Berlin"}, "1": "b"}"#);
     let body = parse_json(&out);
-    assert_eq!(body["form"]["user"], "alice");
+    assert_eq!(body["form"]["city"], "Berlin");
 }
 
 #[test]
 fn form_urlencoded_shortcut_form() {
-    let out = jurl(r#"{"p": "https://httpbin.org/post", "c!": "form!", "b": {"user": "alice"}, "1": "b"}"#);
+    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"c!": "form!"}, "b": {"city": "Berlin"}, "1": "b"}"#);
     let body = parse_json(&out);
-    assert_eq!(body["form"]["user"], "alice");
+    assert_eq!(body["form"]["city"], "Berlin");
 }
 
 #[test]
 fn form_urlencoded_shortcut_f() {
-    let out = jurl(r#"{"p": "https://httpbin.org/post", "c!": "f!", "b": {"user": "alice"}, "1": "b"}"#);
+    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"c!": "f!"}, "b": {"city": "Berlin"}, "1": "b"}"#);
     let body = parse_json(&out);
-    assert_eq!(body["form"]["user"], "alice");
+    assert_eq!(body["form"]["city"], "Berlin");
 }
 
 // --- Multipart: full Content-Type ---
@@ -132,14 +133,14 @@ fn multipart_full() {
 
 #[test]
 fn multipart_shortcut_multi() {
-    let out = jurl(r#"{"p": "https://httpbin.org/post", "c!": "multi!", "b": {"field": "val"}, "1": "b"}"#);
+    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"c!": "multi!"}, "b": {"field": "val"}, "1": "b"}"#);
     let body = parse_json(&out);
     assert_eq!(body["form"]["field"], "val");
 }
 
 #[test]
 fn multipart_shortcut_m() {
-    let out = jurl(r#"{"p": "https://httpbin.org/post", "c!": "m!", "b": {"field": "val"}, "1": "b"}"#);
+    let out = jurl(r#"{"p": "https://httpbin.org/post", "h": {"c!": "m!"}, "b": {"field": "val"}, "1": "b"}"#);
     let body = parse_json(&out);
     assert_eq!(body["form"]["field"], "val");
 }
@@ -156,7 +157,7 @@ fn auth_basic_full_header() {
 
 #[test]
 fn auth_basic_shortcut() {
-    let out = jurl(r#"{"g": "https://httpbin.org/get", "a!": "basic!user:pass", "1": "b"}"#);
+    let out = jurl(r#"{"g": "https://httpbin.org/get", "h": {"a!": "basic!user:pass"}, "1": "b"}"#);
     let body = parse_json(&out);
     assert_eq!(body["headers"]["Authorization"], "Basic dXNlcjpwYXNz");
 }
@@ -170,9 +171,32 @@ fn auth_bearer_full_header() {
 
 #[test]
 fn auth_bearer_shortcut() {
-    let out = jurl(r#"{"g": "https://httpbin.org/get", "a!": "bearer!tok123", "1": "b"}"#);
+    let out = jurl(r#"{"g": "https://httpbin.org/get", "h": {"a!": "bearer!tok123"}, "1": "b"}"#);
     let body = parse_json(&out);
     assert_eq!(body["headers"]["Authorization"], "Bearer tok123");
+}
+
+// --- Smart auth: bare token → Bearer ---
+
+#[test]
+fn auth_bare_token() {
+    let out = jurl(r#"{"g": "https://httpbin.org/get", "h": {"a!": "my-token"}, "1": "b"}"#);
+    let body = parse_json(&out);
+    assert_eq!(body["headers"]["Authorization"], "Bearer my-token");
+}
+
+#[test]
+fn auth_string_with_scheme_passthrough() {
+    let out = jurl(r#"{"g": "https://httpbin.org/get", "h": {"a!": "Basic dXNlcjpwYXNz"}, "1": "b"}"#);
+    let body = parse_json(&out);
+    assert_eq!(body["headers"]["Authorization"], "Basic dXNlcjpwYXNz");
+}
+
+#[test]
+fn auth_array_basic() {
+    let out = jurl(r#"{"g": "https://httpbin.org/get", "h": {"a!": ["user", "pass"]}, "1": "b"}"#);
+    let body = parse_json(&out);
+    assert_eq!(body["headers"]["Authorization"], "Basic dXNlcjpwYXNz");
 }
 
 // --- Content-Type prefix shortcuts ---
@@ -205,7 +229,7 @@ fn metadata_scalar() {
     let out = jurl(r#"{"g": "https://httpbin.org/get", "md": "batch-1", "1": "j(md,s.code)"}"#);
     let json = parse_json(&out);
     assert_eq!(json["md"], "batch-1");
-    assert_eq!(json["s"]["code"], 200);
+    assert_eq!(json["s"]["c"], 200);
 }
 
 #[test]
@@ -276,7 +300,7 @@ fn config_default_headers() {
 fn config_auth_shortcut() {
     let out = jurl_with_config(
         r#"{"g": "https://httpbin.org/get", "1": "b"}"#,
-        Some(r#"{"a!": "bearer!session-tok"}"#),
+        Some(r#"{"h": {"a!": "bearer!session-tok"}}"#),
     );
     let body = parse_json(&out);
     assert_eq!(body["headers"]["Authorization"], "Bearer session-tok");
@@ -300,7 +324,7 @@ fn config_rule_url_match() {
 fn config_rule_method_match() {
     let out = jurl_with_config(
         r#"{"p": "https://httpbin.org/post", "b": {"x": "1"}, "1": "b"}"#,
-        Some(r#"{"rules": [{"match": {"m": "POST"}, "c!": "f!"}]}"#),
+        Some(r#"{"rules": [{"match": {"m": "POST"}, "h": {"c!": "f!"}}]}"#),
     );
     let body = parse_json(&out);
     assert_eq!(body["form"]["x"], "1");
@@ -350,4 +374,60 @@ fn patch_method() {
     let out = jurl(r#"{"patch": "https://httpbin.org/patch", "b": {"k": "v"}, "1": "b"}"#);
     let body = parse_json(&out);
     assert_eq!(body["json"]["k"], "v");
+}
+
+// --- Concurrency ---
+
+#[test]
+fn concurrency_parallel_faster_than_sequential() {
+    // 3 requests to /delay/1 with concurrency 3 should complete in ~1s, not ~3s
+    let input = r#"{"g": "https://httpbin.org/delay/1", "1": "s.code"}
+{"g": "https://httpbin.org/delay/1", "1": "s.code"}
+{"g": "https://httpbin.org/delay/1", "1": "s.code"}"#;
+    let start = std::time::Instant::now();
+    let out = jurl_with_config(input, Some(r#"{"concurrency": 3}"#));
+    let elapsed = start.elapsed();
+    assert!(out.matches("200").count() == 3, "all 3 should return 200");
+    assert!(elapsed.as_secs() < 5, "should complete in under 5s with concurrency 3, took {}s", elapsed.as_secs());
+}
+
+#[test]
+fn concurrency_default_sequential() {
+    // Default concurrency is 1 — 2 requests to /delay/1 should take ~2s
+    let input = r#"{"g": "https://httpbin.org/delay/1", "1": "s.code"}
+{"g": "https://httpbin.org/delay/1", "1": "s.code"}"#;
+    let start = std::time::Instant::now();
+    let out = jurl(input);
+    let elapsed = start.elapsed();
+    assert!(out.matches("200").count() == 2);
+    assert!(elapsed.as_secs() >= 2, "should take at least 2s sequentially, took {}s", elapsed.as_secs());
+}
+
+#[test]
+fn concurrency_per_endpoint_limit() {
+    // Global concurrency 4, but per-endpoint limit 1 for httpbin delay
+    // 2 requests to /delay/1 with per-endpoint limit 1 should take ~2s
+    let input = r#"{"g": "https://httpbin.org/delay/1", "1": "s.code"}
+{"g": "https://httpbin.org/delay/1", "1": "s.code"}"#;
+    let config = r#"{"concurrency": 4, "rules": [{"match": {"u": "**httpbin.org/delay**"}, "concurrency": 1}]}"#;
+    let start = std::time::Instant::now();
+    let out = jurl_with_config(input, Some(config));
+    let elapsed = start.elapsed();
+    assert!(out.matches("200").count() == 2);
+    assert!(elapsed.as_secs() >= 2, "per-endpoint limit 1 should serialize requests, took {}s", elapsed.as_secs());
+}
+
+// --- Streaming ---
+
+#[test]
+fn file_stream_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("streamed.txt");
+    let file_key = format!("file://{}?stream", path.display());
+    let input = format!(r#"{{"g": "https://httpbin.org/get", "{}": "b", "1": "s"}}"#, file_key);
+    let out = jurl(&input);
+    assert_eq!(out, "HTTP/1.1 200 OK");
+    let file_content = std::fs::read_to_string(&path).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&file_content).unwrap();
+    assert_eq!(body["url"], "https://httpbin.org/get");
 }

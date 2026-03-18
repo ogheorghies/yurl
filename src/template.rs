@@ -6,17 +6,17 @@ use crate::atom::{RequestData, ResponseData};
 
 fn resolve_var<'a>(key: &str, resp: &'a ResponseData, req: &'a RequestData) -> Cow<'a, str> {
     match key {
-        "b" => Cow::Owned(STANDARD.encode(&resp.body_bytes)),
-        "h" => Cow::Borrowed(&resp.headers_raw),
-        "s" => Cow::Borrowed(&resp.status_line),
-        "s.code" => Cow::Borrowed(&resp.status_parts.code),
-        "s.text" => Cow::Borrowed(&resp.status_parts.text),
-        "s.version" => Cow::Borrowed(&resp.status_parts.version),
+        "b" | "o.b" => Cow::Owned(STANDARD.encode(&resp.body_bytes)),
+        "h" | "o.h" => Cow::Borrowed(&resp.headers_raw),
+        "s" | "o.s" => Cow::Borrowed(&resp.status_line),
+        "s.code" | "s.c" | "o.s.code" => Cow::Borrowed(&resp.status_parts.code),
+        "s.text" | "s.t" | "o.s.text" => Cow::Borrowed(&resp.status_parts.text),
+        "s.version" | "s.v" | "o.s.version" => Cow::Borrowed(&resp.status_parts.version),
         "m" => Cow::Borrowed(&req.method),
         "u" => Cow::Borrowed(&req.url),
-        "as" => Cow::Borrowed(&req.status_line),
-        "ah" => Cow::Borrowed(&req.headers_raw),
-        "ab" => req
+        "i.s" => Cow::Borrowed(&req.status_line),
+        "i.h" => Cow::Borrowed(&req.headers_raw),
+        "i.b" => req
             .body_json
             .as_ref()
             .map(|v| Cow::Owned(serde_json::to_string(v).unwrap()))

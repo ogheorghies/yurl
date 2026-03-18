@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::shortcut::{expand_headers, extract_shortcut_headers};
+use yttp::expand_headers;
 
 pub fn is_output_key(key: &str) -> bool {
     key == "1" || key == "2" || key.starts_with("file://")
@@ -11,11 +11,20 @@ pub struct Rule {
     pub match_method: Option<String>,
     pub match_md: Vec<(String, Value)>,
     pub headers: Map<String, Value>,
+    pub concurrency: Option<usize>,
+}
+
+pub enum Progress {
+    Off,
+    On,
+    Known(u64),
 }
 
 pub struct Config {
     pub default_headers: Map<String, Value>,
     pub default_outputs: Vec<(String, String)>,
+    pub global_concurrency: usize,
+    pub progress: Progress,
     pub rules: Vec<Rule>,
 }
 
@@ -24,6 +33,8 @@ impl Config {
         Config {
             default_headers: Map::new(),
             default_outputs: Vec::new(),
+            global_concurrency: 1,
+            progress: Progress::Off,
             rules: Vec::new(),
         }
     }
@@ -38,10 +49,6 @@ impl Config {
             .cloned()
             .unwrap_or_default();
 
-        // Merge ct/auth shortcut keys
-        for (k, v) in extract_shortcut_headers(obj) {
-            default_headers.entry(k).or_insert(v);
-        }
         expand_headers(&mut default_headers);
 
         let mut default_outputs = Vec::new();
@@ -53,6 +60,20 @@ impl Config {
             }
         }
 
+        let global_concurrency = obj
+            .get("concurrency")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(1);
+
+        let progress = match obj.get("progress") {
+            Some(Value::Bool(true)) => Progress::On,
+            Some(Value::Number(n)) => {
+                Progress::Known(n.as_u64().unwrap_or(0).max(1))
+            }
+            _ => Progress::Off,
+        };
+
         let rules = obj
             .get("rules")
             .and_then(|v| v.as_array())
@@ -62,6 +83,8 @@ impl Config {
         Config {
             default_headers,
             default_outputs,
+            global_concurrency,
+            progress,
             rules,
         }
     }
@@ -74,7 +97,6 @@ impl Config {
         url: &str,
         md: &Option<Value>,
         request_headers: &Option<Value>,
-        request_obj: &Map<String, Value>,
     ) -> Map<String, Value> {
         let mut merged = self.default_headers.clone();
 
@@ -94,12 +116,22 @@ impl Config {
             }
         }
 
-        // Merge ct/auth from request level (highest priority)
-        for (k, v) in extract_shortcut_headers(request_obj) {
-            merged.insert(k, v);
-        }
-
         merged
+    }
+
+    /// Return indices of rules that match and have a concurrency limit.
+    pub fn matching_concurrency_rules(
+        &self,
+        method: &str,
+        url: &str,
+        md: &Option<Value>,
+    ) -> Vec<usize> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.concurrency.is_some() && rule_matches(rule, method, url, md))
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 
@@ -133,16 +165,19 @@ fn parse_rule(val: &Value) -> Rule {
         .cloned()
         .unwrap_or_default();
 
-    for (k, v) in extract_shortcut_headers(obj) {
-        headers.entry(k).or_insert(v);
-    }
     expand_headers(&mut headers);
+
+    let concurrency = obj
+        .get("concurrency")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.max(1) as usize);
 
     Rule {
         match_url,
         match_method,
         match_md,
         headers,
+        concurrency,
     }
 }
 
