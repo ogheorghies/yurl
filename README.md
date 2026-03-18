@@ -5,8 +5,8 @@ Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#better-ht
 
 Want JSON output? Use `jurl` - same binary.
 
-[Shortcuts](#header-shortcuts) · [Auth](#authorization) · [Output](#output) · [Concurrency](#concurrency-and-streaming) · 
-[Progress](#progress) · [Batch config](#batch-config) · [Cookbook](#cookbook) · [Reference](#reference)
+[Shortcuts](#header-shortcuts) · [Auth](#authorization) · [Output](#output) · [Concurrency](#concurrency-and-streaming) ·
+[Caching](#caching) · [Progress](#progress) · [Batch config](#batch-config) · [Cookbook](#cookbook) · [Reference](#reference)
 
 Install with: `cargo install yurl`
 
@@ -341,6 +341,70 @@ EOF
 ```
 
 When streaming, the body is written chunk-by-chunk as it arrives. If another (non-streaming) destination also needs the body, it is still buffered for that destination — but the streaming file never accumulates the full response in memory.
+
+### Caching
+
+Rules can cache responses in a local SQLite database. Useful for avoiding redundant API calls during development, retries, or batch reruns.
+
+```yaml
+rules:
+  - match: {u: "**api.openai.com**"}
+    cache: true                      # cache indefinitely with default settings
+```
+
+`cache: true` is shorthand for:
+
+```yaml
+cache:
+  ttl: 0                            # seconds until expiry (0 = no expiry)
+  keys: [m, u, b]                   # what to hash for the cache key
+  at: ~/Library/Caches/yurl         # macOS default (Linux: ~/.cache/yurl)
+```
+
+The cache key is a SHA-256 hash of the selected request parts. Two requests match the same cache entry only if all selected parts are identical.
+
+**`keys`** controls which parts of the request are included in the hash:
+
+| Key | Meaning |
+|---|---|
+| `m` | HTTP method |
+| `u` | URL |
+| `b` | request body |
+| `a` | Authorization header |
+| `h` | all headers |
+| `h.<name>` | specific header (e.g. `h.x-api-key`) |
+
+The default `[m, u, b]` means: same method + same URL + same body = cache hit. Add `a` to separate caches per API key.
+
+**Examples:**
+
+Cache all requests to an API with a 1-hour TTL:
+
+```yaml
+rules:
+  - match: {u: "**api.example.com**"}
+    cache: {ttl: 3600}
+```
+
+Cache OpenAI requests indefinitely, keyed by body and auth (different API keys get separate caches):
+
+```yaml
+rules:
+  - match: {u: "**api.openai.com**"}
+    cache: {keys: [u, b, a]}
+```
+
+Use a project-local cache directory:
+
+```yaml
+rules:
+  - match: {u: "**api.example.com**"}
+    cache: {at: ./.cache}
+```
+
+Expired entries are cleaned up automatically on startup. To clear the cache entirely, delete the cache directory.
+
+> **Note:** Currently, this is application-level caching, not HTTP-compliant caching. It does not respect `Cache-Control`, `ETag`, or `Vary` headers. Responses are cached based solely on the configured `keys` and `ttl`. This makes it useful for memoizing API calls (e.g. LLM endpoints) but not as a general HTTP cache.
 
 ### Progress
 
@@ -711,6 +775,14 @@ rules:
 
   - match: {m: POST, u: "**api.example.com**", md.env: prod}  # multiple criteria (AND)
     h: {a!: bearer!prod-token, c!: j!}
+
+  - match: {u: "**api.openai.com**"}
+    cache: true                      # shorthand: ttl=0, keys=[m,u,b], default dir
+  - match: {u: "**api.example.com**"}
+    cache:
+      ttl: 3600                      # seconds (0 = no expiry)
+      keys: [u, b, a]                # m u b a h h.<name>
+      at: ./.cache                   # cache directory (default: ~/Library/Caches/yurl)
 
 # merge order: config defaults → matching rules (in order) → per-request
 ```

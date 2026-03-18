@@ -1,4 +1,5 @@
 mod atom;
+mod cache;
 mod config;
 mod format_json;
 mod format_yaml;
@@ -104,7 +105,7 @@ fn parse_input(s: &str) -> Value {
     yttp::parse(s).unwrap()
 }
 
-async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool) -> OutputBuffer {
+async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>) -> OutputBuffer {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
 
@@ -250,10 +251,51 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         status_line: req_status_line,
         headers_raw: req_headers_raw,
         headers_json: req_headers_json,
-        body_json: req_body,
+        body_json: req_body.clone(),
         idx,
-        md,
+        md: md.clone(),
     };
+
+    // Cache lookup
+    let cache_config = cache_stores.and_then(|_| config.resolve_cache(&req_data.method, &req_data.url, &md));
+    let cache_key = cache_config.as_ref().map(|cc| {
+        cache::compute_cache_key(cc, &req_data.method, &req_data.url, &req_body, &merged_headers)
+    });
+
+    if let (Some(cc), Some(key)) = (&cache_config, &cache_key) {
+        let store = cache_stores.unwrap().get(&cc.at);
+        let store_lock = store.lock().unwrap();
+        if let Some(cached) = store_lock.get(key) {
+            let mut resp_headers_raw = String::new();
+            for (k, v) in &cached.headers {
+                resp_headers_raw.push_str(&format!("{k}: {}\r\n", v.as_str().unwrap_or("")));
+            }
+            let resp_data = ResponseData {
+                status_line: format!("HTTP/1.1 {}", cached.status),
+                status_parts: StatusParts {
+                    code: cached.status.to_string(),
+                    text: String::new(),
+                    version: "HTTP/1.1".to_string(),
+                },
+                headers_raw: resp_headers_raw,
+                headers_json: cached.headers,
+                body_bytes: cached.body,
+            };
+            let mut buf = OutputBuffer { stdout: Vec::new(), stderr: Vec::new(), files: Vec::new() };
+            for (dest, fmt) in &outputs {
+                match dest {
+                    Dest::Stdout | Dest::StdoutStream => buf.stdout.extend_from_slice(&render(fmt, &resp_data, &req_data)),
+                    Dest::Stderr | Dest::StderrStream => buf.stderr.extend_from_slice(&render(fmt, &resp_data, &req_data)),
+                    Dest::FilePath(template) | Dest::FileStream(template) => {
+                        let data = render(fmt, &resp_data, &req_data);
+                        let path = expand_path(template, &resp_data, &req_data);
+                        buf.files.push((path, data.to_vec()));
+                    }
+                }
+            }
+            return buf;
+        }
+    }
 
     let resp = req.send().await.unwrap();
 
@@ -310,8 +352,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         let stream_stdout = outputs.iter().any(|(d, _)| matches!(d, Dest::StdoutStream));
         let stream_stderr = outputs.iter().any(|(d, _)| matches!(d, Dest::StderrStream));
 
-        // Only buffer body if a non-streaming destination needs it
-        let needs_body_buffer = outputs.iter().any(|(d, _)| {
+        // Only buffer body if a non-streaming destination or cache needs it
+        let needs_body_buffer = cache_config.is_some() || outputs.iter().any(|(d, _)| {
             matches!(d, Dest::Stdout | Dest::Stderr | Dest::FilePath(_))
         });
 
@@ -337,6 +379,18 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     } else {
         resp.bytes().await.unwrap().to_vec()
     };
+
+    // Store in cache if configured
+    if let (Some(cc), Some(key)) = (&cache_config, cache_key) {
+        let cached = cache::CachedResponse {
+            status: status.as_u16(),
+            headers: resp_headers_json.clone(),
+            body: body_bytes.clone(),
+        };
+        let store = cache_stores.unwrap().get(&cc.at);
+        let store_lock = store.lock().unwrap();
+        store_lock.put(&key, &req_data.url, &cached, cc.ttl);
+    }
 
     let resp_data = ResponseData {
         status_line,
@@ -422,10 +476,10 @@ fn pre_parse_for_matching(line: &str) -> (String, String, Option<Value>) {
 async fn main() {
     let args: Args = argh::from_env();
 
-    // Detect yaml mode from binary name
+    // Detect yaml mode from binary name (check filename only, not full path)
     let yaml_mode = std::env::args()
         .next()
-        .map(|s| s.contains("yurl"))
+        .and_then(|s| std::path::Path::new(&s).file_name().map(|f| f.to_string_lossy().contains("yurl")))
         .unwrap_or(false);
 
     if args.version {
@@ -444,6 +498,7 @@ async fn main() {
     };
 
     let config = Arc::new(config);
+    let cache_stores = Arc::new(cache::CacheStores::new());
     let concurrent = config.global_concurrency > 1;
     let global_sem = Arc::new(Semaphore::new(config.global_concurrency));
     let stdout_lock = Arc::new(Mutex::new(()));
@@ -516,6 +571,7 @@ async fn main() {
                          progress_bar: Option<Arc<ProgressBar>>,
                          stderr_suppressed: Option<Arc<AtomicUsize>>,
                          warn_bar: Option<Arc<ProgressBar>>,
+                         cache_stores: Arc<cache::CacheStores>,
                          idx: usize,
                          concurrent: bool,
                          yaml_mode: bool| {
@@ -533,7 +589,7 @@ async fn main() {
             for s in &needed_sems {
                 _rule_permits.push(s.acquire().await.unwrap());
             }
-            let buf = execute(&line, &client, idx, &config, concurrent, yaml_mode).await;
+            let buf = execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores)).await;
             flush_output_locked(
                 buf,
                 &stdout_lock,
@@ -601,6 +657,7 @@ async fn main() {
                 progress_bar.clone(),
                 stderr_suppressed.clone(),
                 warn_bar.clone(),
+                Arc::clone(&cache_stores),
                 idx,
                 concurrent,
                 yaml_mode,
@@ -684,6 +741,7 @@ async fn main() {
                 progress_bar.clone(),
                 stderr_suppressed.clone(),
                 warn_bar.clone(),
+                Arc::clone(&cache_stores),
                 idx,
                 concurrent,
                 yaml_mode,

@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 
+use crate::cache::{self, CacheConfig};
 use yttp::expand_headers;
 
 pub fn is_output_key(key: &str) -> bool {
@@ -12,6 +13,7 @@ pub struct Rule {
     pub match_md: Vec<(String, Value)>,
     pub headers: Map<String, Value>,
     pub concurrency: Option<usize>,
+    pub cache: Option<CacheConfig>,
 }
 
 pub enum Progress {
@@ -119,6 +121,21 @@ impl Config {
         merged
     }
 
+    /// Return the cache config from the first matching rule with a cache field.
+    pub fn resolve_cache(
+        &self,
+        method: &str,
+        url: &str,
+        md: &Option<Value>,
+    ) -> Option<CacheConfig> {
+        for rule in &self.rules {
+            if rule.cache.is_some() && rule_matches(rule, method, url, md) {
+                return rule.cache.clone();
+            }
+        }
+        None
+    }
+
     /// Return indices of rules that match and have a concurrency limit.
     pub fn matching_concurrency_rules(
         &self,
@@ -172,12 +189,15 @@ fn parse_rule(val: &Value) -> Rule {
         .and_then(|v| v.as_u64())
         .map(|v| v.max(1) as usize);
 
+    let cache = obj.get("cache").and_then(cache::parse_cache);
+
     Rule {
         match_url,
         match_method,
         match_md,
         headers,
         concurrency,
+        cache,
     }
 }
 
