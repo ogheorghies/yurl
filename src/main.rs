@@ -2,6 +2,7 @@ mod atom;
 mod config;
 mod format_json;
 mod format_yaml;
+mod interactive;
 mod template;
 
 use argh::FromArgs;
@@ -13,7 +14,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde_json::{Map, Value};
 use std::fs;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
@@ -502,82 +503,22 @@ async fn main() {
             .collect(),
     );
 
-    // Read stdin — peek first line to detect format
-    let stdin = io::stdin().lock();
-    let mut lines_iter = stdin.lines().peekable();
+    let idx_counter = Arc::new(AtomicUsize::new(0));
 
-    // Detect input format from first non-empty line
-    let mut first_line = None;
-    while let Some(Ok(line)) = lines_iter.peek() {
-        if line.trim().is_empty() {
-            lines_iter.next();
-            continue;
-        }
-        first_line = Some(line.trim().to_string());
-        break;
-    }
-
-    let is_yaml_input = first_line
-        .as_ref()
-        .map(|l| serde_json::from_str::<Value>(l).is_err())
-        .unwrap_or(false);
-
-    // Collect request lines/documents
-    let request_lines: Vec<String> = if is_yaml_input {
-        // YAML mode: collect all remaining lines, split on ---
-        let mut all = String::new();
-        if let Some(first) = first_line {
-            all.push_str(&first);
-            all.push('\n');
-        }
-        // Consume the peeked line
-        lines_iter.next();
-        for line in lines_iter {
-            let line = line.unwrap();
-            all.push_str(&line);
-            all.push('\n');
-        }
-        // Split on --- and convert each YAML doc to JSON string
-        let mut docs = Vec::new();
-        for doc in all.split("\n---\n") {
-            let trimmed = doc.trim();
-            if trimmed.is_empty() || trimmed == "---" {
-                continue;
-            }
-            // Convert YAML to JSON string for uniform processing
-            let val: Value = serde_yml::from_str(trimmed).unwrap();
-            docs.push(serde_json::to_string(&val).unwrap());
-        }
-        docs
-    } else {
-        // JSONL mode: each line is a request
-        let mut lines = Vec::new();
-        if let Some(first) = first_line {
-            lines.push(first);
-            lines_iter.next(); // consume peeked
-        }
-        for line in lines_iter {
-            let line = line.unwrap();
-            if !line.is_empty() {
-                lines.push(line);
-            }
-        }
-        lines
-    };
-
-    let mut handles = Vec::new();
-
-    for (idx, line) in request_lines.into_iter().enumerate() {
-        let client = client.clone();
-        let config = Arc::clone(&config);
-        let sem = Arc::clone(&global_sem);
-        let rule_sems = Arc::clone(&rule_sems);
-        let stdout_lock = Arc::clone(&stdout_lock);
-        let stderr_lock = Arc::clone(&stderr_lock);
-        let progress_bar = progress_bar.clone();
-        let stderr_suppressed = stderr_suppressed.clone();
-        let warn_bar = warn_bar.clone();
-
+    // Spawn a request task and return its JoinHandle
+    let spawn_request = |line: String,
+                         client: Client,
+                         config: Arc<Config>,
+                         global_sem: Arc<Semaphore>,
+                         rule_sems: Arc<Vec<Option<Arc<Semaphore>>>>,
+                         stdout_lock: Arc<Mutex<()>>,
+                         stderr_lock: Arc<Mutex<()>>,
+                         progress_bar: Option<Arc<ProgressBar>>,
+                         stderr_suppressed: Option<Arc<AtomicUsize>>,
+                         warn_bar: Option<Arc<ProgressBar>>,
+                         idx: usize,
+                         concurrent: bool,
+                         yaml_mode: bool| {
         let (method_str, url_str, md) = pre_parse_for_matching(&line);
         let matching_rules = config.matching_concurrency_rules(&method_str, &url_str, &md);
 
@@ -586,8 +527,8 @@ async fn main() {
             .filter_map(|&i| rule_sems[i].as_ref().map(Arc::clone))
             .collect();
 
-        let handle = tokio::spawn(async move {
-            let _global_permit = sem.acquire().await.unwrap();
+        tokio::spawn(async move {
+            let _global_permit = global_sem.acquire().await.unwrap();
             let mut _rule_permits = Vec::new();
             for s in &needed_sems {
                 _rule_permits.push(s.acquire().await.unwrap());
@@ -599,6 +540,11 @@ async fn main() {
                 &stderr_lock,
                 stderr_suppressed.as_deref(),
             );
+
+            // Flush stdout in interactive mode
+            if io::stdout().is_terminal() {
+                let _ = io::stdout().flush();
+            }
 
             if let Some(pb) = &progress_bar {
                 pb.inc(1);
@@ -613,12 +559,141 @@ async fn main() {
                     }
                 }
             }
-        });
-        handles.push(handle);
-    }
+        })
+    };
 
-    for handle in handles {
-        handle.await.unwrap();
+    if io::stdin().is_terminal() {
+        // Interactive mode — run REPL on a blocking thread, send lines via channel
+        // Use a pair: send request, wait for done signal before next prompt
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
+
+        let repl_handle = std::thread::spawn(move || {
+            interactive::run(|line| {
+                let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+                tx.send((line, done_tx)).ok();
+                // Wait for request to complete before showing next prompt
+                done_rx.recv().ok();
+            });
+        });
+
+        // Process lines as they arrive from the REPL
+        while let Some((line, done_tx)) = rx.recv().await {
+            let idx = idx_counter.fetch_add(1, Ordering::Relaxed);
+
+            // Show spinner while request is in flight
+            let spinner = ProgressBar::new_spinner();
+            spinner.set_style(
+                ProgressStyle::default_spinner()
+                    .template("  {spinner} request {msg}...")
+                    .unwrap(),
+            );
+            spinner.set_message(format!("{idx}"));
+            spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+
+            let handle = spawn_request(
+                line,
+                client.clone(),
+                Arc::clone(&config),
+                Arc::clone(&global_sem),
+                Arc::clone(&rule_sems),
+                Arc::clone(&stdout_lock),
+                Arc::clone(&stderr_lock),
+                progress_bar.clone(),
+                stderr_suppressed.clone(),
+                warn_bar.clone(),
+                idx,
+                concurrent,
+                yaml_mode,
+            );
+            handle.await.unwrap();
+            spinner.finish_and_clear();
+            // Signal REPL to show next prompt
+            done_tx.send(()).ok();
+        }
+
+        repl_handle.join().ok();
+    } else {
+        // Pipe mode — read stdin, detect format, spawn tasks
+        let stdin = io::stdin().lock();
+        let mut lines_iter = stdin.lines().peekable();
+
+        let mut first_line = None;
+        while let Some(Ok(line)) = lines_iter.peek() {
+            if line.trim().is_empty() {
+                lines_iter.next();
+                continue;
+            }
+            first_line = Some(line.trim().to_string());
+            break;
+        }
+
+        let is_yaml_input = first_line
+            .as_ref()
+            .map(|l| serde_json::from_str::<Value>(l).is_err())
+            .unwrap_or(false);
+
+        let request_lines: Vec<String> = if is_yaml_input {
+            let mut all = String::new();
+            if let Some(first) = first_line {
+                all.push_str(&first);
+                all.push('\n');
+            }
+            lines_iter.next();
+            for line in lines_iter {
+                let line = line.unwrap();
+                all.push_str(&line);
+                all.push('\n');
+            }
+            let mut docs = Vec::new();
+            for doc in all.split("\n---\n") {
+                let trimmed = doc.trim();
+                if trimmed.is_empty() || trimmed == "---" {
+                    continue;
+                }
+                let val: Value = serde_yml::from_str(trimmed).unwrap();
+                docs.push(serde_json::to_string(&val).unwrap());
+            }
+            docs
+        } else {
+            let mut lines = Vec::new();
+            if let Some(first) = first_line {
+                lines.push(first);
+                lines_iter.next();
+            }
+            for line in lines_iter {
+                let line = line.unwrap();
+                if !line.is_empty() {
+                    lines.push(line);
+                }
+            }
+            lines
+        };
+
+        let mut handles = Vec::new();
+
+        for line in request_lines {
+            let idx = idx_counter.fetch_add(1, Ordering::Relaxed);
+            let handle = spawn_request(
+                line,
+                client.clone(),
+                Arc::clone(&config),
+                Arc::clone(&global_sem),
+                Arc::clone(&rule_sems),
+                Arc::clone(&stdout_lock),
+                Arc::clone(&stderr_lock),
+                progress_bar.clone(),
+                stderr_suppressed.clone(),
+                warn_bar.clone(),
+                idx,
+                concurrent,
+                yaml_mode,
+            );
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
     }
 
     // Finish progress bars

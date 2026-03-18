@@ -12,6 +12,8 @@ Install with: `cargo install yurl`
 
 If the first examples make sense, jump to the [Reference](#reference).
 
+![demo](demo/demo.gif)
+
 ```bash
 echo '{g: https://jsonplaceholder.typicode.com/posts/1}' | yurl
 ```
