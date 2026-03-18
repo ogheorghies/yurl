@@ -112,7 +112,7 @@ echo '{p: https://httpbin.org/post, b: {key: val}}' | jurl
 
 The `Content-Type` header determines how `b` is encoded:
 
-- `application/json` (default) — JSON body
+- `application/json` (default, `c!: j!` is implied) — JSON body
 - `application/x-www-form-urlencoded` — form encoding (`b` object becomes `key=value&...`)
 - `multipart/form-data` — multipart encoding; values starting with `file://` are read from disk
 
