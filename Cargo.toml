@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "JSON-driven HTTP client with shortcuts, flexible output routing, rule-based middleware, concurrency, and streaming"
