@@ -623,12 +623,12 @@ Full specification: [yttp reference](https://github.com/ogheorghies/yttp#referen
 
 ```yaml
 # request
-g: https://example.com               # method shortcuts: g p d, or full names
-h: {a!: my-token, c!: j!}            # header key/value shortcuts expand in place
+g: https://example.com                # method shortcuts: g p d, or full names
+h: {a!: my-token, c!: j!}             # header key/value shortcuts expand in place
 b: {city: Berlin}                     # body encoding follows Content-Type
 
-# response — default output: y(s!,h,b) / j(s!,h,b)
-s: {v: HTTP/1.1, c: 200, t: OK}      # s! → status inline object
+# response — default output: y(s!,h,b)
+s: {v: HTTP/1.1, c: 200, t: OK}       # s! → status inline object
 h: {content-type: application/json}   # response (output) headers
 b: {city: Berlin, lang: de}           # JSON → structured, UTF-8 → string, binary → base64
 ```
@@ -648,12 +648,12 @@ md:                                  # arbitrary value, available in output and 
 # OUTPUT DESTINATIONS
 # ============================
 
-1: j(s!,h,b)                        # fd 1 (stdout) ← default for jurl
-1: y(s!,h,b)                        # fd 1 (stdout) ← default for yurl
-2: s                                 # fd 2 (stderr) ← raw status line
-file://response.raw: b               # file ← raw body
+1: j(s!,h,b)                               # fd 1 (stdout) ← default for jurl
+1: y(s!,h,b)                               # fd 1 (stdout) ← default for yurl
+2: s                                       # fd 2 (stderr) ← raw status line
+file://response.raw: b                     # file ← raw body
 file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # file ← templated path, auto-streamed (has {{idx}})
-file://large.bin?stream: b           # file ← explicit streaming (no buffering)
+file://large.bin?stream: b                 # file ← explicit streaming (no buffering)
 
 # ============================
 # OUTPUT ATOMS
