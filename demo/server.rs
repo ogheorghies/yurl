@@ -99,14 +99,12 @@ async fn create_item(State(db): State<Db>, headers: HeaderMap, body: axum::body:
     if !check_auth(&headers) {
         return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized"}))).into_response();
     }
-    let mut input: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+    let input: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
     let mut db = db.lock().unwrap();
     let next_id = db.keys().max().copied().unwrap_or(0) + 1;
-    if let Some(obj) = input.as_object_mut() {
-        obj.insert("id".to_string(), json!(next_id));
-    }
-    db.insert(next_id, input.clone());
-    let result = inject_debug(input, &headers);
+    let item = normalize_item(next_id, &input);
+    db.insert(next_id, item.clone());
+    let result = inject_debug(item, &headers);
     (StatusCode::CREATED, axum::Json(result)).into_response()
 }
 
@@ -115,17 +113,22 @@ async fn update_item(State(db): State<Db>, Path(id): Path<u32>, headers: HeaderM
     if !check_auth(&headers) {
         return (StatusCode::UNAUTHORIZED, axum::Json(json!({"error": "unauthorized"}))).into_response();
     }
-    let mut input: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+    let input: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
     let mut db = db.lock().unwrap();
     if !db.contains_key(&id) {
         return (StatusCode::NOT_FOUND, axum::Json(json!({"error": "not found"}))).into_response();
     }
-    if let Some(obj) = input.as_object_mut() {
-        obj.insert("id".to_string(), json!(id));
-    }
-    db.insert(id, input.clone());
-    let result = inject_debug(input, &headers);
+    let item = normalize_item(id, &input);
+    db.insert(id, item.clone());
+    let result = inject_debug(item, &headers);
     axum::Json(result).into_response()
+}
+
+/// Build item with consistent key order: id, name, price.
+fn normalize_item(id: u32, input: &Value) -> Value {
+    let name = input.get("name").cloned().unwrap_or(Value::Null);
+    let price = input.get("price").cloned().unwrap_or(Value::Null);
+    json!({"id": id, "name": name, "price": price})
 }
 
 async fn delete_item(State(db): State<Db>, Path(id): Path<u32>, headers: HeaderMap) -> impl IntoResponse {

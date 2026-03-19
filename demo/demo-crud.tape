@@ -7,7 +7,7 @@ Output demo/demo-crud.gif
 
 Set Shell "bash"
 Set FontSize 13
-Set Width 1000
+Set Width 600
 Set Height 550
 Set Padding 10
 
@@ -34,37 +34,37 @@ Sleep 500ms
 Show
 
 # Launch yurl with auth + verbose header config
-Type `yurl '{h: {a!: [admin, secret], X-Debug: 1}}'`
+Type `yurl '{api: 127.0.0.1:3456, h: {a!: [admin, secret], X-Debug: 1}}'`
 Enter
 Sleep 2500ms
 
 # List all items
-Type "{g: http://127.0.0.1:3456/toys}"
+Type "{g: api!/toys}"
 Enter
 Sleep 2500ms
 
 # Get a single item
-Type "{g: http://127.0.0.1:3456/toys/1}"
+Type "{g: api!/toys/1}"
 Enter
 Sleep 2500ms
 
 # Create a new item
-Type "{p: http://127.0.0.1:3456/toys, b: {name: Owl, price: 5.99}}"
+Type "{p: api!/toys, b: {name: Owl, price: 5.99}}"
 Enter
 Sleep 2500ms
 
 # Update an item
-Type "{put: http://127.0.0.1:3456/toys/1, b: {name: Fox, price: 12.99}}"
+Type "{put: api!/toys/1, b: {name: Fox, price: 12.99}}"
 Enter
 Sleep 2500ms
 
 # Delete an item
-Type "{d: http://127.0.0.1:3456/toys/2}"
+Type "{d: api!/toys/2}"
 Enter
 Sleep 2500ms
 
 # Verify final state
-Type "{g: http://127.0.0.1:3456/toys}"
+Type "{g: api!/toys}"
 Enter
 Sleep 3000ms
 

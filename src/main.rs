@@ -746,6 +746,7 @@ async fn main() {
                     .unwrap(),
             );
             spinner.set_message(format!("{idx}"));
+            eprint!("\x1b[?25l"); // hide cursor
             spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
             let handle = spawn_request(
@@ -766,6 +767,7 @@ async fn main() {
             );
             handle.await.unwrap();
             spinner.finish_and_clear();
+            eprint!("\x1b[?25h"); // restore cursor
             // Signal REPL to show next prompt
             done_tx.send(()).ok();
         }

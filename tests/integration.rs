@@ -585,3 +585,25 @@ fn api_alias_rule_matches_expanded_url() {
     let body = parse_json(&out);
     assert_eq!(body["headers"]["X-Matched"], "yes");
 }
+
+// --- Auto scheme ---
+
+#[test]
+fn auto_scheme_localhost_http() {
+    let b = base(); // http://127.0.0.1:PORT
+    let port = b.rsplit(':').next().unwrap();
+    let out = jurl(&format!(r#"{{"g": "127.0.0.1:{port}/get", "1": "s.code"}}"#));
+    assert_eq!(out, "200");
+}
+
+#[test]
+fn auto_scheme_api_alias_no_scheme() {
+    let b = base();
+    let port = b.rsplit(':').next().unwrap();
+    let config = format!(r#"{{"api": "127.0.0.1:{port}"}}"#);
+    let out = jurl_with_config(
+        r#"{"g": "api!/get", "1": "s.code"}"#,
+        Some(&config),
+    );
+    assert_eq!(out, "200");
+}

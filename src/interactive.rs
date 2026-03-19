@@ -10,7 +10,9 @@ use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-struct YurlHelper;
+struct YurlHelper {
+    step_mode: bool,
+}
 
 impl Helper for YurlHelper {}
 
@@ -23,8 +25,17 @@ impl Completer for YurlHelper {
 
 impl Hinter for YurlHelper {
     type Hint = String;
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        None
+    fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        if line.is_empty() {
+            let hint = if self.step_mode {
+                "type request or .next — .help for more"
+            } else {
+                "type request — .help for more"
+            };
+            Some(format!("\x1b[2m{hint}\x1b[0m"))
+        } else {
+            None
+        }
     }
 }
 
@@ -38,14 +49,17 @@ impl Highlighter for YurlHelper {
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, _default: bool) -> Cow<'b, str> {
         Cow::Owned(format!("\x1b[36m{prompt}\x1b[0m"))
     }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Borrowed(hint)
+    }
 }
 
 const PROMPT: &str = "> ";
 const CONTINUATION: &str = "… ";
 const EXAMPLE: &str = "{g: https://httpbin.org/get}";
 
-fn hint(history_path: &Option<String>, has_history: bool, step_mode: bool) -> String {
-    let yurl = style("yurl").bold().cyan();
+fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
     let ctrl_d = style("Ctrl-D").bold();
     let history_line = history_path
         .as_deref()
@@ -55,28 +69,22 @@ fn hint(history_path: &Option<String>, has_history: bool, step_mode: bool) -> St
             } else {
                 p.to_string()
             };
-            format!("\n  History: {display}\n")
+            format!("History    :  {display}\n")
         })
         .unwrap_or_default();
-    let tip = if !has_history {
-        let arrow = style("↑").bold();
-        format!("\n  Tip: press {arrow} to try an example request.\n")
-    } else {
-        String::new()
-    };
     let step_hint = if step_mode {
         let next = style(".next").bold();
         let go = style(".go").bold();
-        format!("\n  Step mode: {next} to load next request, {go} to run remaining.\n")
+        format!("  {next}    load next piped request\n  {go}      run all remaining\n")
     } else {
         String::new()
     };
-    let version = env!("CARGO_PKG_VERSION");
-    format!("{yurl} v{version}. {ctrl_d} to exit.\n\
-{history_line}
-  Single line:  {{g: https://httpbin.org/get}}
-  Multi-line :  type YAML, then --- to send.
-{step_hint}{tip}")
+    format!("\n\
+Single line:  {{g: https://httpbin.org/get}}\n\
+Multi-line :  type YAML, then --- to send.\n\
+{step_hint}\
+{history_line}\
+  {ctrl_d} to exit.\n")
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
@@ -85,9 +93,12 @@ pub fn run<F>(mut on_request: F, step_queue: Option<VecDeque<String>>)
 where
     F: FnMut(String),
 {
-    let mut rl = Editor::new().expect("failed to initialize editor");
-    rl.set_helper(Some(YurlHelper));
     let history_path = dirs_hint();
+    let mut queue = step_queue.unwrap_or_default();
+    let step_mode = !queue.is_empty();
+
+    let mut rl = Editor::new().expect("failed to initialize editor");
+    rl.set_helper(Some(YurlHelper { step_mode }));
 
     let mut has_history = false;
     if let Some(ref path) = history_path {
@@ -100,10 +111,9 @@ where
         rl.add_history_entry(EXAMPLE).ok();
     }
 
-    let mut queue = step_queue.unwrap_or_default();
-    let step_mode = !queue.is_empty();
-
-    eprintln!("{}", hint(&history_path, has_history, step_mode));
+    let yurl = style("yurl").bold().cyan();
+    let version = env!("CARGO_PKG_VERSION");
+    eprintln!("{yurl} v{version}\n");
 
     loop {
         match rl.readline(PROMPT) {
@@ -113,10 +123,15 @@ where
                     continue;
                 }
 
+                // Handle .help command
+                if trimmed == ".help" || trimmed == ".h" {
+                    eprint!("{}", help_text(&history_path, step_mode));
+                    continue;
+                }
+
                 // Handle .next command
                 if trimmed == ".next" || trimmed == ".n" {
                     if let Some(req) = queue.pop_front() {
-                        // Pre-fill the editor with the next request
                         match rl.readline_with_initial(PROMPT, (&req, "")) {
                             Ok(edited) => {
                                 let edited = edited.trim().to_string();
@@ -150,7 +165,6 @@ where
                     let mut executed = 0;
                     while let Some(req) = queue.pop_front() {
                         if INTERRUPTED_FLAG.load(Ordering::Relaxed) {
-                            // Put back the current request
                             queue.push_front(req);
                             eprintln!("  interrupted ({} remaining)", queue.len());
                             break;
@@ -159,7 +173,6 @@ where
                         executed += 1;
                     }
 
-                    // Restore previous signal handler
                     unsafe { libc::signal(libc::SIGINT, prev_handler); }
 
                     if !INTERRUPTED_FLAG.load(Ordering::Relaxed) && executed > 0 {

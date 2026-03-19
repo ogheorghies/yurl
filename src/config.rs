@@ -266,18 +266,40 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     glob_match_parts(&parts, text)
 }
 
-/// Expand `name!/path` API aliases in a URL.
+/// Expand `name!/path` API aliases in a URL, then auto-detect scheme if missing.
 pub fn expand_api_url(url: &str, apis: &HashMap<String, String>) -> String {
-    if let Some(pos) = url.find('!') {
+    let expanded = if let Some(pos) = url.find('!') {
         let name = &url[..pos];
         if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
             if let Some(base) = apis.get(name) {
                 let rest = &url[pos + 1..];
-                return format!("{}{}", base.trim_end_matches('/'), rest);
+                format!("{}{}", base.trim_end_matches('/'), rest)
+            } else {
+                url.to_string()
             }
+        } else {
+            url.to_string()
         }
+    } else {
+        url.to_string()
+    };
+    add_scheme(&expanded)
+}
+
+/// If a URL has no scheme, prepend https:// (or http:// for localhost/loopback/bare hosts).
+fn add_scheme(url: &str) -> String {
+    if url.contains("://") {
+        return url.to_string();
     }
-    url.to_string()
+    let host = url.split('/').next().unwrap_or(url);
+    let host_no_port = host.split(':').next().unwrap_or(host);
+    if host_no_port == "localhost" || host_no_port == "127.0.0.1" || host_no_port == "[::1]"
+        || !host_no_port.contains('.')
+    {
+        format!("http://{url}")
+    } else {
+        format!("https://{url}")
+    }
 }
 
 fn glob_match_parts(parts: &[&str], text: &str) -> bool {
