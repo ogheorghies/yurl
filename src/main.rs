@@ -472,6 +472,86 @@ fn pre_parse_for_matching(line: &str) -> (String, String, Option<Value>) {
     (method.unwrap_or_default(), url.unwrap_or_default(), md)
 }
 
+/// Streaming stdin reader that yields one request at a time.
+/// Supports JSONL (one JSON object per line) and YAML (documents separated by `---`).
+/// Format is auto-detected from the first non-empty line.
+struct StdinReader<R: BufRead> {
+    lines: R,
+    is_yaml: Option<bool>,
+    buf: String,
+    done: bool,
+}
+
+impl<R: BufRead> StdinReader<R> {
+    fn new(lines: R) -> Self {
+        StdinReader {
+            lines,
+            is_yaml: None,
+            buf: String::new(),
+            done: false,
+        }
+    }
+
+    fn next(&mut self) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        loop {
+            let mut line = String::new();
+            match self.lines.read_line(&mut line) {
+                Ok(0) => {
+                    // EOF
+                    self.done = true;
+                    return self.flush_yaml_buf();
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() && self.is_yaml.is_none() {
+                        continue; // skip leading blank lines
+                    }
+
+                    // Auto-detect format from first non-empty line
+                    if self.is_yaml.is_none() {
+                        self.is_yaml = Some(serde_json::from_str::<Value>(trimmed).is_err());
+                    }
+
+                    if self.is_yaml == Some(true) {
+                        // YAML: accumulate until `---` separator
+                        if trimmed == "---" {
+                            if let Some(doc) = self.flush_yaml_buf() {
+                                return Some(doc);
+                            }
+                            // empty doc between separators, keep reading
+                        } else {
+                            self.buf.push_str(&line);
+                        }
+                    } else {
+                        // JSONL: yield each non-empty line
+                        if !trimmed.is_empty() {
+                            return Some(trimmed.to_string());
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.done = true;
+                    return self.flush_yaml_buf();
+                }
+            }
+        }
+    }
+
+    fn flush_yaml_buf(&mut self) -> Option<String> {
+        let trimmed = self.buf.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let val: Value = serde_yml::from_str(trimmed).unwrap();
+        let json = serde_json::to_string(&val).unwrap();
+        self.buf.clear();
+        Some(json)
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Args = argh::from_env();
@@ -670,66 +750,28 @@ async fn main() {
 
         repl_handle.join().ok();
     } else {
-        // Pipe mode — read stdin, detect format, spawn tasks
-        let stdin = io::stdin().lock();
-        let mut lines_iter = stdin.lines().peekable();
+        // Pipe mode — streaming stdin with backpressure.
+        // Bounded channel capacity: sum of per-rule concurrency slots + global concurrency.
+        // This prevents head-of-line blocking when rules have different concurrency limits.
+        let rule_slots: usize = config.rules.iter().filter_map(|r| r.concurrency).sum();
+        let channel_capacity = rule_slots.max(config.global_concurrency).max(1);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String)>(channel_capacity);
 
-        let mut first_line = None;
-        while let Some(Ok(line)) = lines_iter.peek() {
-            if line.trim().is_empty() {
-                lines_iter.next();
-                continue;
-            }
-            first_line = Some(line.trim().to_string());
-            break;
-        }
-
-        let is_yaml_input = first_line
-            .as_ref()
-            .map(|l| serde_json::from_str::<Value>(l).is_err())
-            .unwrap_or(false);
-
-        let request_lines: Vec<String> = if is_yaml_input {
-            let mut all = String::new();
-            if let Some(first) = first_line {
-                all.push_str(&first);
-                all.push('\n');
-            }
-            lines_iter.next();
-            for line in lines_iter {
-                let line = line.unwrap();
-                all.push_str(&line);
-                all.push('\n');
-            }
-            let mut docs = Vec::new();
-            for doc in all.split("\n---\n") {
-                let trimmed = doc.trim();
-                if trimmed.is_empty() || trimmed == "---" {
-                    continue;
-                }
-                let val: Value = serde_yml::from_str(trimmed).unwrap();
-                docs.push(serde_json::to_string(&val).unwrap());
-            }
-            docs
-        } else {
-            let mut lines = Vec::new();
-            if let Some(first) = first_line {
-                lines.push(first);
-                lines_iter.next();
-            }
-            for line in lines_iter {
-                let line = line.unwrap();
-                if !line.is_empty() {
-                    lines.push(line);
+        let idx_counter_reader = Arc::clone(&idx_counter);
+        let reader_handle = std::thread::spawn(move || {
+            let stdin = io::stdin().lock();
+            let mut reader = StdinReader::new(stdin);
+            while let Some(line) = reader.next() {
+                let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
+                if tx.blocking_send((idx, line)).is_err() {
+                    break; // receiver dropped
                 }
             }
-            lines
-        };
+        });
 
         let mut handles = Vec::new();
 
-        for line in request_lines {
-            let idx = idx_counter.fetch_add(1, Ordering::Relaxed);
+        while let Some((idx, line)) = rx.recv().await {
             let handle = spawn_request(
                 line,
                 client.clone(),
@@ -749,9 +791,11 @@ async fn main() {
             handles.push(handle);
         }
 
+        // Wait for all in-flight tasks to complete
         for handle in handles {
             handle.await.unwrap();
         }
+        reader_handle.join().ok();
     }
 
     // Finish progress bars

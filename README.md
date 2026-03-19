@@ -307,7 +307,7 @@ By default, requests run sequentially (`concurrency: 1`). Set `concurrency` in b
 jurl '{concurrency: 10}'
 ```
 
-Per-endpoint limits can be set via rules — the request must satisfy both the global and per-endpoint limit:
+Per-endpoint limits can be set via rules — a request must hold a permit from the global semaphore **and** from every matching rule before executing:
 
 ```bash
 cat <<'EOF' > /tmp/config.yaml
@@ -316,6 +316,18 @@ rules:
   - match: {u: "**slow-api.com**"}
     concurrency: 2                   # but at most 2 to slow-api.com
 EOF
+```
+
+If a request matches multiple rules with concurrency limits, it acquires all of them. The effective concurrency is the minimum — the most restrictive rule wins:
+
+```yaml
+concurrency: 10
+rules:
+  - match: {u: "**api.example.com**"}
+    concurrency: 5                   # up to 5 to this API
+  - match: {m: POST}
+    concurrency: 2                   # up to 2 POSTs globally
+# A POST to api.example.com needs both permits → at most 2 concurrent
 ```
 
 When running requests concurrently, outputs could interleave. `jurl` handles this automatically:
