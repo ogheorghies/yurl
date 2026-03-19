@@ -160,7 +160,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     }
 
     let method = method.expect("no HTTP method found");
-    let url = url.expect("no URL found");
+    let url = config::expand_api_url(&url.expect("no URL found"), &config.apis);
 
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 
@@ -462,7 +462,7 @@ fn flush_output_locked(
     }
 }
 
-fn pre_parse_for_matching(line: &str) -> (String, String, Option<Value>) {
+fn pre_parse_for_matching(line: &str, apis: &std::collections::HashMap<String, String>) -> (String, String, Option<Value>) {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
     let mut method = None;
@@ -471,7 +471,7 @@ fn pre_parse_for_matching(line: &str) -> (String, String, Option<Value>) {
     for (key, val) in obj {
         if let Some(m) = resolve_method(key) {
             method = Some(m.to_string());
-            url = Some(val.as_str().unwrap().to_string());
+            url = Some(config::expand_api_url(val.as_str().unwrap(), apis));
         } else if key.to_lowercase() == "md" {
             md = Some(val.clone());
         }
@@ -666,7 +666,7 @@ async fn main() {
                          idx: usize,
                          concurrent: bool,
                          yaml_mode: bool| {
-        let (method_str, url_str, md) = pre_parse_for_matching(&line);
+        let (method_str, url_str, md) = pre_parse_for_matching(&line, &config.apis);
         let matching_rules = config.matching_concurrency_rules(&method_str, &url_str, &md);
 
         let needed_sems: Vec<Arc<Semaphore>> = matching_rules

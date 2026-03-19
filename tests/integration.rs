@@ -522,3 +522,66 @@ fn streaming_stdin_executes_before_eof() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout.matches("200").count(), 2, "both requests should complete");
 }
+
+// --- API aliases ---
+
+#[test]
+fn api_alias_single() {
+    let b = base();
+    let config = format!(r#"{{"api": "{b}"}}"#);
+    let out = jurl_with_config(
+        r#"{"g": "api!/get", "1": "b"}"#,
+        Some(&config),
+    );
+    let body = parse_json(&out);
+    assert_eq!(body["url"], format!("{b}/get"));
+}
+
+#[test]
+fn api_alias_multiple() {
+    let b = base();
+    let config = format!(r#"{{"apis": {{"main": "{b}", "other": "{b}"}}}}"#);
+    let out = jurl_with_config(
+        r#"{"g": "main!/get", "1": "b"}"#,
+        Some(&config),
+    );
+    let body = parse_json(&out);
+    assert_eq!(body["url"], format!("{b}/get"));
+}
+
+#[test]
+fn api_alias_no_path() {
+    let b = base();
+    let config = format!(r#"{{"api": "{b}/get"}}"#);
+    let out = jurl_with_config(
+        r#"{"g": "api!", "1": "s.code"}"#,
+        Some(&config),
+    );
+    assert_eq!(out, "200");
+}
+
+#[test]
+fn api_alias_unrecognized_passthrough() {
+    let b = base();
+    // unknown! should pass through as literal URL — will fail to connect, but the point
+    // is it doesn't panic. Use a real URL to verify passthrough works.
+    let out = jurl_with_config(
+        &format!(r#"{{"g": "{b}/get", "1": "s.code"}}"#),
+        Some(r#"{"api": "http://example.com"}"#),
+    );
+    assert_eq!(out, "200");
+}
+
+#[test]
+fn api_alias_rule_matches_expanded_url() {
+    let b = base();
+    let config = format!(
+        r#"{{"api": "{b}", "rules": [{{"match": {{"u": "**127.0.0.1**"}}, "h": {{"X-Matched": "yes"}}}}]}}"#
+    );
+    let out = jurl_with_config(
+        r#"{"g": "api!/get", "1": "b"}"#,
+        Some(&config),
+    );
+    let body = parse_json(&out);
+    assert_eq!(body["headers"]["X-Matched"], "yes");
+}

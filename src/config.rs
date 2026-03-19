@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 use crate::cache::{self, CacheConfig};
 use yttp::expand_headers;
@@ -28,6 +29,7 @@ pub struct Config {
     pub global_concurrency: usize,
     pub progress: Progress,
     pub rules: Vec<Rule>,
+    pub apis: HashMap<String, String>,
 }
 
 impl Config {
@@ -38,6 +40,7 @@ impl Config {
             global_concurrency: 1,
             progress: Progress::Off,
             rules: Vec::new(),
+            apis: HashMap::new(),
         }
     }
 
@@ -82,12 +85,25 @@ impl Config {
             .map(|arr| arr.iter().map(parse_rule).collect())
             .unwrap_or_default();
 
+        let mut apis = HashMap::new();
+        if let Some(Value::String(url)) = obj.get("api") {
+            apis.insert("api".to_string(), url.clone());
+        }
+        if let Some(Value::Object(map)) = obj.get("apis") {
+            for (k, v) in map {
+                if let Some(url) = v.as_str() {
+                    apis.insert(k.clone(), url.to_string());
+                }
+            }
+        }
+
         Config {
             default_headers,
             default_outputs,
             global_concurrency,
             progress,
             rules,
+            apis,
         }
     }
 
@@ -248,6 +264,20 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     }
 
     glob_match_parts(&parts, text)
+}
+
+/// Expand `name!/path` API aliases in a URL.
+pub fn expand_api_url(url: &str, apis: &HashMap<String, String>) -> String {
+    if let Some(pos) = url.find('!') {
+        let name = &url[..pos];
+        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            if let Some(base) = apis.get(name) {
+                let rest = &url[pos + 1..];
+                return format!("{}{}", base.trim_end_matches('/'), rest);
+            }
+        }
+    }
+    url.to_string()
 }
 
 fn glob_match_parts(parts: &[&str], text: &str) -> bool {
