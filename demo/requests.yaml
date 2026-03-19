@@ -1,0 +1,5 @@
+{g: http://127.0.0.1:3456/toys}
+{g: http://127.0.0.1:3456/toys/1}
+{p: http://127.0.0.1:3456/toys, b: {name: Owl, price: 5.99}}
+{put: http://127.0.0.1:3456/toys/1, b: {name: Fox, price: 12.99}}
+{d: http://127.0.0.1:3456/toys/2}

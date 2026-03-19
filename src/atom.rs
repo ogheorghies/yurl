@@ -275,18 +275,22 @@ fn inline_keys(atoms: &[Atom]) -> Vec<&'static str> {
 }
 
 pub fn render<'a>(fmt: &Format, resp: &'a ResponseData, req: &'a RequestData) -> Cow<'a, [u8]> {
+    render_color(fmt, resp, req, false)
+}
+
+pub fn render_color<'a>(fmt: &Format, resp: &'a ResponseData, req: &'a RequestData, color: bool) -> Cow<'a, [u8]> {
     match fmt {
         Format::Raw(atom) => atom_raw(atom, resp, req),
         Format::Json(atoms) => {
             let val = build_value_map(atoms, resp, req);
             let keys = inline_keys(atoms);
-            let out = crate::format_json::to_pretty_json(&val, &keys);
+            let out = crate::format_json::to_pretty_json(&val, &keys, color);
             Cow::Owned(out.into_bytes())
         }
         Format::Yaml(atoms) => {
             let val = build_value_map(atoms, resp, req);
             let keys = inline_keys(atoms);
-            let out = crate::format_yaml::to_yaml(&val, &keys);
+            let out = crate::format_yaml::to_yaml(&val, &keys, color);
             Cow::Owned(out.into_bytes())
         }
     }

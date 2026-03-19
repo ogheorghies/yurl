@@ -2116,7 +2116,10 @@ dependencies = [
  "base64",
  "console",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "indicatif",
+ "libc",
  "multer",
  "reqwest",
  "rusqlite",
@@ -2126,6 +2129,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tower",
  "url",
  "yttp",
 ]

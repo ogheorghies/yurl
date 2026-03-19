@@ -7,7 +7,7 @@ mod interactive;
 mod template;
 
 use argh::FromArgs;
-use atom::{Atom, Format, RequestData, ResponseData, StatusParts, UrlParts, parse_format, render};
+use atom::{Atom, Format, RequestData, ResponseData, StatusParts, UrlParts, parse_format, render, render_color};
 use config::{Config, Progress};
 use futures_util::StreamExt;
 use template::expand_path;
@@ -27,6 +27,10 @@ struct Args {
     /// print version
     #[argh(switch, short = 'v')]
     version: bool,
+
+    /// step through piped stdin requests interactively (.next / .go)
+    #[argh(switch)]
+    step: bool,
 
     /// batch config JSON (default headers, output format, rules)
     #[argh(positional)]
@@ -105,7 +109,7 @@ fn parse_input(s: &str) -> Value {
     yttp::parse(s).unwrap()
 }
 
-async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>) -> OutputBuffer {
+async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> OutputBuffer {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
 
@@ -172,14 +176,17 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     let mut req_headers_raw = String::new();
     let mut req_headers_json = Map::new();
     for (k, v) in &merged_headers {
-        let v_str = v.as_str().unwrap();
+        let v_str = match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
         if k.eq_ignore_ascii_case("content-type") && content_type.starts_with("multipart/form-data")
         {
             continue;
         }
-        req = req.header(k.as_str(), v_str);
+        req = req.header(k.as_str(), v_str.as_str());
         req_headers_raw.push_str(&format!("{k}: {v_str}\r\n"));
-        req_headers_json.insert(k.clone(), Value::String(v_str.to_string()));
+        req_headers_json.insert(k.clone(), Value::String(v_str));
     }
 
     if let Some(b) = &req_body {
@@ -284,8 +291,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
             let mut buf = OutputBuffer { stdout: Vec::new(), stderr: Vec::new(), files: Vec::new() };
             for (dest, fmt) in &outputs {
                 match dest {
-                    Dest::Stdout | Dest::StdoutStream => buf.stdout.extend_from_slice(&render(fmt, &resp_data, &req_data)),
-                    Dest::Stderr | Dest::StderrStream => buf.stderr.extend_from_slice(&render(fmt, &resp_data, &req_data)),
+                    Dest::Stdout | Dest::StdoutStream => buf.stdout.extend_from_slice(&render_color(fmt, &resp_data, &req_data, color_stdout)),
+                    Dest::Stderr | Dest::StderrStream => buf.stderr.extend_from_slice(&render_color(fmt, &resp_data, &req_data, color_stderr)),
                     Dest::FilePath(template) | Dest::FileStream(template) => {
                         let data = render(fmt, &resp_data, &req_data);
                         let path = expand_path(template, &resp_data, &req_data);
@@ -410,11 +417,11 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         match dest {
             Dest::FileStream(_) | Dest::StdoutStream | Dest::StderrStream => {}
             Dest::Stdout => {
-                let data = render(fmt, &resp_data, &req_data);
+                let data = render_color(fmt, &resp_data, &req_data, color_stdout);
                 buf.stdout.extend_from_slice(&data);
             }
             Dest::Stderr => {
-                let data = render(fmt, &resp_data, &req_data);
+                let data = render_color(fmt, &resp_data, &req_data, color_stderr);
                 buf.stderr.extend_from_slice(&data);
             }
             Dest::FilePath(template) => {
@@ -638,6 +645,10 @@ async fn main() {
             .collect(),
     );
 
+    let force_color = std::env::var("FORCE_COLOR").is_ok() || std::env::var("CLICOLOR_FORCE").is_ok();
+    let color_stdout = force_color || io::stdout().is_terminal();
+    let color_stderr = force_color || io::stderr().is_terminal();
+
     let idx_counter = Arc::new(AtomicUsize::new(0));
 
     // Spawn a request task and return its JoinHandle
@@ -669,7 +680,7 @@ async fn main() {
             for s in &needed_sems {
                 _rule_permits.push(s.acquire().await.unwrap());
             }
-            let buf = execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores)).await;
+            let buf = execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores), color_stdout, color_stderr).await;
             flush_output_locked(
                 buf,
                 &stdout_lock,
@@ -698,18 +709,29 @@ async fn main() {
         })
     };
 
-    if io::stdin().is_terminal() {
+    if io::stdin().is_terminal() || args.step {
         // Interactive mode — run REPL on a blocking thread, send lines via channel
-        // Use a pair: send request, wait for done signal before next prompt
+        // In --step mode, pre-load stdin requests for .next/.go commands
+        let step_queue = if args.step && !io::stdin().is_terminal() {
+            let stdin = io::stdin().lock();
+            let mut reader = StdinReader::new(stdin);
+            let mut queue = std::collections::VecDeque::new();
+            while let Some(line) = reader.next() {
+                queue.push_back(line);
+            }
+            Some(queue)
+        } else {
+            None
+        };
+
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 
         let repl_handle = std::thread::spawn(move || {
             interactive::run(|line| {
                 let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
                 tx.send((line, done_tx)).ok();
-                // Wait for request to complete before showing next prompt
                 done_rx.recv().ok();
-            });
+            }, step_queue);
         });
 
         // Process lines as they arrive from the REPL
@@ -720,7 +742,7 @@ async fn main() {
             let spinner = ProgressBar::new_spinner();
             spinner.set_style(
                 ProgressStyle::default_spinner()
-                    .template("  {spinner} request {msg}...")
+                    .template("  {spinner} \x1b[2mrequest {msg}...\x1b[0m")
                     .unwrap(),
             );
             spinner.set_message(format!("{idx}"));
