@@ -607,3 +607,76 @@ fn auto_scheme_api_alias_no_scheme() {
     );
     assert_eq!(out, "200");
 }
+
+// --- Env var expansion ---
+
+#[test]
+fn env_var_in_config_header() {
+    let b = base();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(r#"{"h": {"X-Test": "$YURL_TEST_HEADER"}}"#);
+    cmd.env("YURL_TEST_HEADER", "expanded-value");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let input = format!(r#"{{"g": "{b}/get", "1": "b"}}"#);
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let out = String::from_utf8(output.stdout).unwrap();
+    let body = parse_json(&out);
+    assert_eq!(body["headers"]["X-Test"], "expanded-value");
+}
+
+#[test]
+fn env_var_in_auth_array() {
+    let b = base();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(r#"{"h": {"a!": ["user", "$YURL_TEST_PASS"]}}"#);
+    cmd.env("YURL_TEST_PASS", "pass");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let input = format!(r#"{{"g": "{b}/get", "1": "b"}}"#);
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let out = String::from_utf8(output.stdout).unwrap();
+    let body = parse_json(&out);
+    // [user, pass] → Basic dXNlcjpwYXNz
+    assert_eq!(body["headers"]["Authorization"], "Basic dXNlcjpwYXNz");
+}
+
+#[test]
+fn env_var_unset_passes_through() {
+    let b = base();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(r#"{"h": {"X-Test": "$YURL_NONEXISTENT_VAR"}}"#);
+    cmd.env_remove("YURL_NONEXISTENT_VAR");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            let input = format!(r#"{{"g": "{b}/get", "1": "b"}}"#);
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let out = String::from_utf8(output.stdout).unwrap();
+    let body = parse_json(&out);
+    // Unset var should pass through as literal $YURL_NONEXISTENT_VAR
+    assert_eq!(body["headers"]["X-Test"], "$YURL_NONEXISTENT_VAR");
+}

@@ -54,6 +54,7 @@ impl Config {
             .cloned()
             .unwrap_or_default();
 
+        expand_env_vars(&mut default_headers);
         expand_headers(&mut default_headers);
 
         let mut default_outputs = Vec::new();
@@ -198,6 +199,7 @@ fn parse_rule(val: &Value) -> Rule {
         .cloned()
         .unwrap_or_default();
 
+    expand_env_vars(&mut headers);
     expand_headers(&mut headers);
 
     let concurrency = obj
@@ -264,6 +266,35 @@ fn glob_match(pattern: &str, text: &str) -> bool {
     }
 
     glob_match_parts(&parts, text)
+}
+
+/// Expand `$VAR` references in header values from environment variables.
+/// Only pure `$VAR` values are expanded (the entire string is `$` + alphanumeric/underscore).
+/// Also expands inside arrays (e.g. `[user, $PASS]` for basic auth).
+fn expand_env_vars(headers: &mut Map<String, Value>) {
+    for (_k, v) in headers.iter_mut() {
+        expand_env_value(v);
+    }
+}
+
+fn expand_env_value(v: &mut Value) {
+    match v {
+        Value::String(s) => {
+            if let Some(var) = s.strip_prefix('$') {
+                if !var.is_empty() && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    if let Ok(val) = std::env::var(var) {
+                        *s = val;
+                    }
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                expand_env_value(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Expand `name!/path` API aliases in a URL, then auto-detect scheme if missing.

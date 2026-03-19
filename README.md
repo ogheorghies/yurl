@@ -186,6 +186,20 @@ h:
 
 `a!` works inside `h:` in requests, config defaults, and rules.
 
+### Environment variables
+
+Config header values can reference environment variables with `$VAR`:
+
+```yaml
+# in config (CLI arg or file)
+h:
+  a!: $API_TOKEN           # bearer auth from env
+  a!: [admin, $DB_PASS]    # basic auth, password from env
+  X-Api-Key: $API_KEY      # custom header from env
+```
+
+Only pure `$VAR` values are expanded — the entire string must be `$` followed by alphanumeric/underscore characters. This keeps credentials out of CLI args and shell history.
+
 ### Header shortcuts
 
 Shortcuts expand in header keys and values:

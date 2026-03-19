@@ -25,7 +25,7 @@ Sleep 5000ms
 Type "target/debug/examples/demo-server >/dev/null 2>&1 &"
 Enter
 Sleep 1000ms
-Type "export FORCE_COLOR=1 PATH=$(pwd)/target/debug:$PATH"
+Type "export FORCE_COLOR=1 PASS=secret PATH=$(pwd)/target/debug:$PATH"
 Enter
 Sleep 200ms
 Type "clear"
@@ -34,7 +34,7 @@ Sleep 500ms
 Show
 
 # Launch yurl with auth + verbose header config
-Type `yurl '{api: 127.0.0.1:3456, h: {a!: [admin, secret], X-Debug: 1}}'`
+Type `yurl '{api: 127.0.0.1:3456, h: {a!: [admin, $PASS], X-Debug: 1}}'`
 Enter
 Sleep 2500ms
 
