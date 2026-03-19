@@ -5,8 +5,8 @@ Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#better-ht
 
 Want JSON output? Use `jurl` - same binary.
 
-[Shortcuts](#header-shortcuts) · [Auth](#authorization) · [Output](#output) · [Concurrency](#concurrency-and-streaming) ·
-[Caching](#caching) · [Progress](#progress) · [Batch config](#batch-config) · [Cookbook](#cookbook) · [Reference](#reference)
+[Shortcuts](#header-shortcuts) · [Auth](#authorization) · [Output](#output) · [API aliases](#api-aliases) · [Step mode](#step-mode) ·
+[Concurrency](#concurrency-and-streaming) · [Caching](#caching) · [Progress](#progress) · [Batch config](#batch-config) · [Cookbook](#cookbook) · [Reference](#reference)
 
 Install with: `cargo install yurl`
 
@@ -97,10 +97,13 @@ EOF
 ## Request
 
 Reads requests from stdin as JSON (one per line) or YAML (documents separated by `---`).
+Stdin is consumed as a stream — requests begin executing before EOF, supporting slow producers like `tail -f requests.jsonl | jurl`.
+
 The HTTP method key holds the URL. Any capitalization is accepted; `g`, `p`, `d` are shortcuts for get, post, delete.
+URLs without a scheme are auto-detected: `localhost`, `127.0.0.1`, `[::1]`, and bare hostnames get `http://`, everything else gets `https://`.
 
 ```
-echo '{p: https://httpbin.org/post, b: {key: val}}' | jurl
+echo '{p: httpbin.org/post, b: {key: val}}' | jurl
 ```
 
 ### Request keys
@@ -298,6 +301,46 @@ echo '{g: https://httpbin.org/get}' | jurl "$(cat /tmp/rules.yaml)"
 - `md.<field>` — exact metadata field match
 
 Merge order: config defaults → matching rules (in order) → per-request.
+
+### API aliases
+
+Define named base URLs in config to avoid repeating long endpoints:
+
+```yaml
+# Single alias
+api: https://api.example.com/v1
+
+# Multiple aliases
+apis:
+  prod: https://api.example.com/v1
+  staging: https://staging.example.com/v1
+```
+
+Use `name!/path` in request URLs:
+
+```
+{g: api!/toys}           # → GET https://api.example.com/v1/toys
+{p: api!/toys, b: {name: Cat}}
+{g: staging!/toys}       # → GET https://staging.example.com/v1/toys
+```
+
+`api:` is shorthand for `apis: {api: ...}`. Both can coexist. Rules match against the expanded URL. Unrecognized `name!` prefixes pass through as-is.
+
+### Step mode
+
+The `--step` flag enables interactive debugging of piped requests:
+
+```
+cat requests.yaml | yurl --step '{api: api.example.com/v1, h: {a!: my-token}}'
+```
+
+This enters the REPL with piped requests available as a queue. Commands:
+
+- **`.next`** (`.n`) — loads the next piped request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
+- **`.go`** (`.g`) — executes all remaining piped requests. Ctrl-C breaks back to the prompt.
+- **`.help`** (`.h`) — shows help.
+
+You can also type ad-hoc requests at any time, just like normal interactive mode.
 
 ### Concurrency and streaming
 
@@ -758,6 +801,12 @@ file://large.bin?stream: b                 # file ← explicit streaming (no buf
 Passed as a CLI argument. Acts as middleware — applied to every request before it's sent.
 
 ```yaml
+# --- API aliases ---
+api: https://api.example.com/v1      # single: use as api!/path
+apis:                                # multiple: use as prod!/path, staging!/path
+  prod: https://api.example.com/v1
+  staging: https://staging.example.com/v1
+
 # --- Default headers ---
 h:
   a!: bearer!my-token                # applied to all requests
