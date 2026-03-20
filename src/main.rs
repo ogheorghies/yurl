@@ -34,6 +34,10 @@ struct Args {
     #[argh(switch)]
     step: bool,
 
+    /// print reference card
+    #[argh(switch, long = "ref")]
+    reference: bool,
+
     /// batch config JSON (default headers, output format, rules)
     #[argh(positional)]
     config: Option<String>,
@@ -811,6 +815,10 @@ async fn main() {
     if args.version {
         let name = if yaml_mode { "yurl" } else { "jurl" };
         println!("{name} {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if args.reference {
+        eprint!("{}", interactive::reference_card());
         return;
     }
     let client = Client::new();
