@@ -1,6 +1,6 @@
 # yurl
 
-HTTP client — [batch](#batch-config), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
+"Better curl" — [batch](#batch-config), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
 Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#yttp--request-and-response) JSON/YAML facade.
 
 [Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
