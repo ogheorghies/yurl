@@ -33,9 +33,9 @@ impl Hinter for YurlHelper {
     fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
         if line.is_empty() {
             let hint = if self.step_mode {
-                "requests are piped. type .next — .help or .t"
+                "requests are piped. type .next — .help, .t, or .ref"
             } else {
-                "type request — .help or .t"
+                "type request — .help, .t, or .ref"
             };
             Some(format!("\x1b[2m{hint}\x1b[0m"))
         } else {
