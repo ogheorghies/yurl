@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT"
 description = "JSON-driven HTTP client with shortcuts, flexible output routing, rule-based middleware, concurrency, and streaming"
@@ -46,4 +46,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 
 [[example]]
 name = "demo-server"
-path = "demo/server.rs"
+path = "docs/server.rs"

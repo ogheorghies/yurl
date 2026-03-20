@@ -1,9 +1,9 @@
 # Demo: yurl interactive CRUD against a REST API
-# Render with: vhs demo/demo-crud.tape
+# Render with: vhs docs/demo-crud.tape
 #
 # Shows: auth config, X-Verbose header, CRUD operations against a faux REST API
 
-Output demo/demo-crud.gif
+Output docs/demo-crud.gif
 
 Set Shell "bash"
 Set FontSize 13

@@ -19,7 +19,7 @@ build:
 demo:
 	@command -v vhs >/dev/null 2>&1 || { echo "error: vhs not installed"; exit 1; }
 	@found=0; \
-	for tape in demo/*.tape; do \
+	for tape in docs/*.tape; do \
 		gif=$${tape%.tape}.gif; \
 		if [ "$(FORCE_DEMO)" = "1" ] || [ ! -f "$$gif" ] || \
 		   [ -n "$$(find src/ Cargo.toml "$$tape" -newer "$$gif" 2>/dev/null)" ]; then \
@@ -81,5 +81,5 @@ tag:
 	@echo "tagged v$(VERSION) (push with: git push && git push --tags)"
 
 # Full release pipeline
-release: bump test demo build check-readme publish tag
+release: bump test demo build check-readme tag publish
 	@echo "released v$(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')"

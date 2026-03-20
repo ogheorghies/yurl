@@ -2,7 +2,7 @@
 
 Tutorial-style explanations for yurl features. For quick reference, see [README](../README.md). For worked examples, see [Cookbook](cookbook.md).
 
-![demo](../demo/demo-crud.gif)
+![demo](demo-crud.gif)
 
 ## Reading Requests
 
