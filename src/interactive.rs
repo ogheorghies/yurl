@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use console::style;
 use rustyline::Editor;
 use rustyline::highlight::Highlighter;
@@ -8,7 +9,11 @@ use rustyline::Helper;
 use rustyline::Context;
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::config::Config;
+use crate::expand_request;
 
 struct YurlHelper {
     step_mode: bool,
@@ -80,22 +85,23 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
         String::new()
     };
     let expand = style(".x").bold();
+    let conf = style(".c").bold();
     format!("\n\
 Single line:  {{g: https://httpbin.org/get}}\n\
 Multi-line :  type YAML, then --- to send.\n\
   {expand}      expand request with config, review before sending\n\
+  {conf}      show config, or .c {{config}} to replace it\n\
 {step_hint}\
 {history_line}\
   {ctrl_d} to exit.\n")
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
-/// `on_expand` resolves a request with full config (API aliases, headers, shortcuts).
+/// `config` is shared via ArcSwap — `.x` reads it, `.c` replaces it.
 /// If `step_queue` is Some, enables .next and .go commands for stepping through piped requests.
-pub fn run<F, G>(mut on_request: F, on_expand: G, step_queue: Option<VecDeque<String>>)
+pub fn run<F>(mut on_request: F, config: &Arc<ArcSwap<Config>>, step_queue: Option<VecDeque<String>>)
 where
     F: FnMut(String),
-    G: Fn(String) -> String,
 {
     let history_path = dirs_hint();
     let mut queue = step_queue.unwrap_or_default();
@@ -155,6 +161,32 @@ where
                     continue;
                 }
 
+                // Handle .c command — show or replace config
+                if trimmed == ".c" {
+                    let cfg = config.load();
+                    eprintln!("  config: {}", cfg.summary());
+                    continue;
+                }
+                if let Some(cfg_str) = trimmed.strip_prefix(".c ") {
+                    let cfg_str = cfg_str.trim();
+                    if cfg_str.is_empty() {
+                        let cfg = config.load();
+                        eprintln!("  config: {}", cfg.summary());
+                        continue;
+                    }
+                    match yttp::parse(cfg_str) {
+                        Ok(val) => {
+                            let new_config = Config::parse(&val);
+                            eprintln!("  config: {}", new_config.summary());
+                            config.store(Arc::new(new_config));
+                        }
+                        Err(e) => {
+                            eprintln!("  error: {e}");
+                        }
+                    }
+                    continue;
+                }
+
                 // Handle .x command — expand request with config
                 if let Some(req) = trimmed.strip_prefix(".x ") {
                     let req = req.trim();
@@ -162,7 +194,7 @@ where
                         eprintln!("  usage: .x {{request}}");
                         continue;
                     }
-                    let expanded = on_expand(req.to_string());
+                    let expanded = expand_request(req, &config.load());
                     match rl.readline_with_initial(PROMPT, (&expanded, "")) {
                         Ok(edited) => {
                             let edited = edited.trim().to_string();

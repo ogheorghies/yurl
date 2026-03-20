@@ -353,6 +353,7 @@ This enters the REPL with piped requests available as a queue. Commands:
 - **`.next`** (`.n`) — loads the next piped request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
 - **`.go`** (`.g`) — executes all remaining piped requests. Ctrl-C breaks back to the prompt.
 - **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.next`: press Ctrl-A and prepend `.x ` to expand a queued request.
+- **`.c`** — shows the current config summary. **`.c {config}`** replaces the active config. Subsequent requests and `.x` expansions use the new config.
 - **`.help`** (`.h`) — shows help.
 
 You can also type ad-hoc requests at any time, just like normal interactive mode.

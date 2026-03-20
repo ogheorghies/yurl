@@ -6,6 +6,7 @@ mod format_yaml;
 mod interactive;
 mod template;
 
+use arc_swap::ArcSwap;
 use argh::FromArgs;
 use atom::{Atom, Format, RequestData, ResponseData, StatusParts, UrlParts, parse_format, render, render_color};
 use config::{Config, Progress};
@@ -112,7 +113,7 @@ fn parse_input(s: &str) -> Value {
 /// Expand a request line with full config resolution: API aliases, header
 /// shortcuts, env vars, rule matching, header merging. Returns the resolved
 /// request as a JSON string suitable for re-editing and execution.
-fn expand_request(line: &str, config: &Config) -> String {
+pub fn expand_request(line: &str, config: &Config) -> String {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
 
@@ -635,15 +636,16 @@ async fn main() {
         None => Config::empty(),
     };
 
-    let config = Arc::new(config);
+    let config = Arc::new(ArcSwap::from_pointee(config));
     let cache_stores = Arc::new(cache::CacheStores::new());
-    let concurrent = config.global_concurrency > 1;
-    let global_sem = Arc::new(Semaphore::new(config.global_concurrency));
+    let init_cfg = config.load_full();
+    let concurrent = init_cfg.global_concurrency > 1;
+    let global_sem = Arc::new(Semaphore::new(init_cfg.global_concurrency));
     let stdout_lock = Arc::new(Mutex::new(()));
     let stderr_lock = Arc::new(Mutex::new(()));
 
     // Progress bar setup
-    let show_progress = !matches!(config.progress, Progress::Off);
+    let show_progress = !matches!(init_cfg.progress, Progress::Off);
     let multi = if show_progress {
         Some(Arc::new(MultiProgress::new()))
     } else {
@@ -651,7 +653,7 @@ async fn main() {
     };
 
     let progress_bar = multi.as_ref().map(|m| {
-        let pb = match config.progress {
+        let pb = match init_cfg.progress {
             Progress::Known(n) => {
                 let pb = m.add(ProgressBar::new(n));
                 pb.set_style(
@@ -689,12 +691,13 @@ async fn main() {
 
     // Create per-rule semaphores for rules that have concurrency limits
     let rule_sems: Arc<Vec<Option<Arc<Semaphore>>>> = Arc::new(
-        config
+        init_cfg
             .rules
             .iter()
             .map(|r| r.concurrency.map(|c| Arc::new(Semaphore::new(c))))
             .collect(),
     );
+    drop(init_cfg);
 
     let force_color = std::env::var("FORCE_COLOR").is_ok() || std::env::var("CLICOLOR_FORCE").is_ok();
     let color_stdout = force_color || io::stdout().is_terminal();
@@ -777,13 +780,13 @@ async fn main() {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 
-        let expand_config = Arc::clone(&config);
+        let repl_config = Arc::clone(&config);
         let repl_handle = std::thread::spawn(move || {
             interactive::run(|line| {
                 let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
                 tx.send((line, done_tx)).ok();
                 done_rx.recv().ok();
-            }, |line| expand_request(&line, &expand_config), step_queue);
+            }, &repl_config, step_queue);
         });
 
         // Process lines as they arrive from the REPL
@@ -801,10 +804,11 @@ async fn main() {
             eprint!("\x1b[?25l"); // hide cursor
             spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
+            let current_config = config.load_full();
             let handle = spawn_request(
                 line,
                 client.clone(),
-                Arc::clone(&config),
+                current_config,
                 Arc::clone(&global_sem),
                 Arc::clone(&rule_sems),
                 Arc::clone(&stdout_lock),
@@ -829,8 +833,10 @@ async fn main() {
         // Pipe mode — streaming stdin with backpressure.
         // Bounded channel capacity: sum of per-rule concurrency slots + global concurrency.
         // This prevents head-of-line blocking when rules have different concurrency limits.
-        let rule_slots: usize = config.rules.iter().filter_map(|r| r.concurrency).sum();
-        let channel_capacity = rule_slots.max(config.global_concurrency).max(1);
+        let pipe_cfg = config.load_full();
+        let rule_slots: usize = pipe_cfg.rules.iter().filter_map(|r| r.concurrency).sum();
+        let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
+        drop(pipe_cfg);
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String)>(channel_capacity);
 
         let idx_counter_reader = Arc::clone(&idx_counter);
@@ -851,7 +857,7 @@ async fn main() {
             let handle = spawn_request(
                 line,
                 client.clone(),
-                Arc::clone(&config),
+                config.load_full(),
                 Arc::clone(&global_sem),
                 Arc::clone(&rule_sems),
                 Arc::clone(&stdout_lock),
@@ -937,5 +943,45 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result).unwrap();
         let h = parsed.get("h").unwrap().as_object().unwrap();
         assert_eq!(h.get("X-From-Rule").unwrap(), "yes");
+    }
+
+    #[test]
+    fn config_summary_empty() {
+        let config = Config::empty();
+        assert_eq!(config.summary(), "(empty)");
+    }
+
+    #[test]
+    fn config_summary_with_fields() {
+        let config_json = parse_input(
+            r#"{"api": {"main": "localhost:3000", "staging": "staging.example.com"}, "h": {"X-Test": "1"}, "rules": [{"h": {"X-R": "1"}}], "concurrency": 5}"#,
+        );
+        let config = Config::parse(&config_json);
+        let summary = config.summary();
+        assert!(summary.contains("api:"));
+        assert!(summary.contains("h: 1 header"));
+        assert!(summary.contains("rules: 1"));
+        assert!(summary.contains("concurrency: 5"));
+    }
+
+    #[test]
+    fn arcswap_config_replacement() {
+        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Old": "1"}}"#);
+        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
+
+        // Initial state
+        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load());
+        assert!(result.contains("localhost:3000"));
+        assert!(result.contains("X-Old"));
+
+        // Replace config
+        let new_config_json = parse_input(r#"{"api": "example.com:8080", "h": {"X-New": "2"}}"#);
+        config.store(Arc::new(Config::parse(&new_config_json)));
+
+        // Verify new config is used
+        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load());
+        assert!(result.contains("example.com:8080"));
+        assert!(result.contains("X-New"));
+        assert!(!result.contains("X-Old"));
     }
 }

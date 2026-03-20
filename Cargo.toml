@@ -9,6 +9,7 @@ categories = ["command-line-utilities", "web-programming::http-client"]
 repository = "https://github.com/ogheorghies/yurl"
 
 [dependencies]
+arc-swap = "1"
 argh = "0.1"
 base64 = "0.22"
 console = "0.15"

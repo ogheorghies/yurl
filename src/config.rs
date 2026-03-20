@@ -111,6 +111,35 @@ impl Config {
         }
     }
 
+    /// Return a human-readable one-line summary of the active config.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.apis.is_empty() {
+            let names: Vec<&str> = self.apis.keys().map(|s| s.as_str()).collect();
+            parts.push(format!("api: {}", names.join(", ")));
+        }
+        if !self.default_headers.is_empty() {
+            let n = self.default_headers.len();
+            parts.push(format!("h: {n} header{}", if n == 1 { "" } else { "s" }));
+        }
+        if !self.rules.is_empty() {
+            let n = self.rules.len();
+            parts.push(format!("rules: {n}"));
+        }
+        if self.global_concurrency > 1 {
+            parts.push(format!("concurrency: {}", self.global_concurrency));
+        }
+        if !self.default_outputs.is_empty() {
+            let keys: Vec<&str> = self.default_outputs.iter().map(|(k, _)| k.as_str()).collect();
+            parts.push(format!("output: {}", keys.join(", ")));
+        }
+        if parts.is_empty() {
+            "(empty)".to_string()
+        } else {
+            parts.join(" | ")
+        }
+    }
+
     /// Compute merged headers: defaults → matching rules → per-request.
     /// Later values override earlier ones for the same key.
     pub fn resolve_headers(
