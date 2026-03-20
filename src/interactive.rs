@@ -33,7 +33,7 @@ impl Hinter for YurlHelper {
     fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
         if line.is_empty() {
             let hint = if self.step_mode {
-                "type request or .next — .help for more"
+                "requests are piped. type .next — or .help for more"
             } else {
                 "type request — .help for more"
             };
@@ -65,7 +65,6 @@ const CONTINUATION: &str = "… ";
 const EXAMPLE: &str = "{g: https://httpbin.org/get}";
 
 fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
-    let ctrl_d = style("Ctrl-D").bold();
     let history_line = history_path
         .as_deref()
         .map(|p| {
@@ -74,26 +73,33 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
             } else {
                 p.to_string()
             };
-            format!("History    :  {display}\n")
+            format!("\nHistory: {display}\n")
         })
         .unwrap_or_default();
-    let step_hint = if step_mode {
-        let next = style(".next").bold();
-        let go = style(".go").bold();
-        format!("  {next}    load next piped request\n  {go}      run all remaining\n")
+    let step_cmds = if step_mode {
+        format!("\
+  {next}  {ndot}   load next piped request, edit, Enter to send\n\
+  {go}    {gdot}   run all remaining piped requests, Ctrl-C to stop\n",
+            next = style(".next").bold(), ndot = style(".n").dim(),
+            go = style(".go").bold(), gdot = style(".g").dim(),
+        )
     } else {
         String::new()
     };
-    let expand = style(".x").bold();
-    let conf = style(".c").bold();
     format!("\n\
-Single line:  {{g: https://httpbin.org/get}}\n\
-Multi-line :  type YAML, then --- to send.\n\
-  {expand}      expand request with config, review before sending\n\
-  {conf}      show config, or .c {{config}} to replace it\n\
-{step_hint}\
-{history_line}\
-  {ctrl_d} to exit.\n")
+  {{request}}   send a JSON/YAML request\n\
+  {x}  {{req}}   expand request with config, review before sending\n\
+  {c}          show current config\n\
+  {c}  {{cfg}}   replace active config\n\
+{step_cmds}\
+  {help}  {hdot}   show this help\n\
+  {ctrl_d}      exit\n\
+{history_line}",
+        x = style(".x").bold(),
+        c = style(".c").bold(),
+        help = style(".help").bold(), hdot = style(".h").dim(),
+        ctrl_d = style("Ctrl-D").bold(),
+    )
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
@@ -107,7 +113,10 @@ where
     let mut queue = step_queue.unwrap_or_default();
     let step_mode = !queue.is_empty();
 
-    let mut rl = Editor::new().expect("failed to initialize editor");
+    let rl_config = rustyline::Config::builder()
+        .behavior(rustyline::config::Behavior::PreferTerm)
+        .build();
+    let mut rl = Editor::with_config(rl_config).expect("failed to initialize editor");
     rl.set_helper(Some(YurlHelper { step_mode }));
 
     let mut has_history = false;
@@ -144,8 +153,29 @@ where
                     if let Some(req) = queue.pop_front() {
                         match rl.readline_with_initial(PROMPT, (&req, "")) {
                             Ok(edited) => {
-                                let edited = edited.trim().to_string();
-                                if !edited.is_empty() {
+                                let mut edited = edited.trim().to_string();
+                                if edited.is_empty() {
+                                    // skip
+                                } else if let Some(req) = edited.strip_prefix(".x ") {
+                                    // User prepended .x — expand and re-prompt
+                                    let req = req.trim();
+                                    if !req.is_empty() {
+                                        edited = expand_request(req, &config.load());
+                                        match rl.readline_with_initial(PROMPT, (&edited, "")) {
+                                            Ok(final_edit) => {
+                                                let final_edit = final_edit.trim().to_string();
+                                                if !final_edit.is_empty() {
+                                                    rl.add_history_entry(&final_edit).ok();
+                                                    on_request(final_edit);
+                                                }
+                                            }
+                                            Err(rustyline::error::ReadlineError::Interrupted) => {
+                                                eprintln!("  (skipped)");
+                                            }
+                                            Err(_) => break,
+                                        }
+                                    }
+                                } else {
                                     rl.add_history_entry(&edited).ok();
                                     on_request(edited);
                                 }

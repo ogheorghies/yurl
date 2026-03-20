@@ -569,9 +569,10 @@ impl<R: BufRead> StdinReader<R> {
                         continue; // skip leading blank lines
                     }
 
-                    // Auto-detect format from first non-empty line
+                    // Auto-detect format from first non-empty line.
+                    // Lines starting with { are JSONL/yttp; everything else is YAML.
                     if self.is_yaml.is_none() {
-                        self.is_yaml = Some(serde_json::from_str::<Value>(trimmed).is_err());
+                        self.is_yaml = Some(!trimmed.starts_with('{'));
                     }
 
                     if self.is_yaml == Some(true) {
