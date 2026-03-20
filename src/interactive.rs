@@ -95,7 +95,7 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
 {step_cmds}\
   {help}  {hdot}   show this help\n\
   {ctrl_d}      exit\n\
-{history_line}",
+{history_line}\n",
         x = style(".x").bold(),
         xx = style(".xx").bold(),
         c = style(".c").bold(),
