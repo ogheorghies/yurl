@@ -2107,8 +2107,6 @@ dependencies = [
 [[package]]
 name = "yttp"
 version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a8b95de89c805a936769db62bcaf8d55ead20415b9b0f6447bd3a3c257b65d1"
 dependencies = [
  "base64",
  "serde_json",

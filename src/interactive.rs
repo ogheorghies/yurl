@@ -135,6 +135,9 @@ where
 /// Try to strip a `.x` or `.xx` prefix from the input, expand, and re-prompt.
 /// Returns None if no expand prefix was found (caller should handle as normal input).
 /// Returns Some(true) to continue the loop, Some(false) to break.
+///
+/// On expand error, prints the colored error and re-prompts with the original
+/// input so the user can fix it.
 fn try_expand_and_send<F>(
     input: &str,
     rl: &mut Editor<YurlHelper, rustyline::history::DefaultHistory>,
@@ -145,18 +148,25 @@ where
     F: FnMut(String),
 {
     // .xx must be checked before .x since .xx starts with .x
-    let expanded = if let Some(req) = input.strip_prefix(".xx ") {
+    let (_req, result) = if let Some(req) = input.strip_prefix(".xx ") {
         let req = req.trim();
         if req.is_empty() { return Some(true); }
-        expand_request_structured(req, &config.load())
+        (req, expand_request_structured(req, &config.load()))
     } else if let Some(req) = input.strip_prefix(".x ") {
         let req = req.trim();
         if req.is_empty() { return Some(true); }
-        expand_request(req, &config.load())
+        (req, expand_request(req, &config.load()))
     } else {
         return None;
     };
-    Some(prompt_and_send(rl, &expanded, on_request))
+    match result {
+        Ok(expanded) => Some(prompt_and_send(rl, &expanded, on_request)),
+        Err(e) => {
+            eprintln!("{}", e.display_colored());
+            // Re-prompt with original input so user can fix
+            Some(prompt_and_send(rl, input, on_request))
+        }
+    }
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.

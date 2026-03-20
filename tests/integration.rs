@@ -29,6 +29,23 @@ fn jurl_with_config(input: &str, config: Option<&str>) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn jurl_full(input: &str, config: Option<&str>) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    if let Some(c) = config {
+        cmd.arg(c);
+    }
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl")
+}
+
 fn parse_json(s: &str) -> serde_json::Value {
     serde_json::from_str(s).unwrap()
 }
@@ -722,4 +739,34 @@ fn query_params_absent_noop() {
     let body = parse_json(&out);
     let url = body["url"].as_str().unwrap();
     assert!(!url.contains("?"));
+}
+
+// --- Error handling ---
+
+#[test]
+fn invalid_json_prints_error_continues() {
+    let b = base();
+    // First request is invalid, second is valid
+    let input = format!("{{broken\n{{\"g\": \"{b}/get\", \"1\": \"b\"}}");
+    let output = jurl_full(&input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid") || stderr.contains("^"), "stderr should show error: {stderr}");
+    // Second request should still succeed
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty(), "valid request should produce output");
+}
+
+#[test]
+fn connection_refused_prints_error() {
+    // Port 1 should refuse connections
+    let input = r#"{"g": "http://127.0.0.1:1/test"}"#;
+    let output = jurl_full(input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error"), "stderr should contain error: {stderr}");
+}
+
+#[test]
+fn invalid_config_exits_with_error() {
+    let output = jurl_full(r#"{"g": "http://example.com"}"#, Some("{broken"));
+    assert!(!output.status.success(), "should exit with error code");
 }

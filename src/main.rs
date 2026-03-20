@@ -1,6 +1,7 @@
 mod atom;
 mod cache;
 mod config;
+mod error;
 mod format_json;
 mod format_yaml;
 mod interactive;
@@ -106,13 +107,15 @@ fn maybe_auto_stream(dest: &mut Dest, fmt: &Format, concurrent: bool) {
 }
 
 
-fn parse_input(s: &str) -> Value {
-    yttp::parse(s).unwrap()
+use error::RequestError;
+
+fn parse_input(s: &str) -> Result<Value, RequestError> {
+    yttp::parse(s).map_err(|e| RequestError::from_parse(s, e))
 }
 
 /// Parse a request line with config resolution, returning the resolved parts.
 /// Shared logic for both `expand_request` and `expand_request_structured`.
-fn resolve_request<'a>(line: &str, config: &'a Config) -> (
+fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
     &'a str,                       // method
     String,                        // url (with API alias expanded)
     Option<Value>,                 // query
@@ -120,9 +123,11 @@ fn resolve_request<'a>(line: &str, config: &'a Config) -> (
     Option<Value>,                 // body
     Option<Value>,                 // md
     Vec<(String, String)>,         // outputs
-) {
-    let json = parse_input(line);
-    let obj = json.as_object().unwrap();
+), RequestError> {
+    let json = parse_input(line)?;
+    let obj = json.as_object().ok_or_else(|| RequestError::Structure {
+        msg: "request must be a JSON/YAML object".to_string(),
+    })?;
 
     let mut method = None;
     let mut url = None;
@@ -135,9 +140,22 @@ fn resolve_request<'a>(line: &str, config: &'a Config) -> (
     for (key, val) in obj {
         if let Some(m) = resolve_method(key) {
             method = Some(m);
-            url = Some(val.as_str().unwrap().to_string());
+            url = Some(
+                val.as_str()
+                    .ok_or_else(|| RequestError::Structure {
+                        msg: format!("URL for '{key}' must be a string"),
+                    })?
+                    .to_string(),
+            );
         } else if config::is_output_key(key) {
-            outputs.push((key.clone(), val.as_str().unwrap().to_string()));
+            outputs.push((
+                key.clone(),
+                val.as_str()
+                    .ok_or_else(|| RequestError::Structure {
+                        msg: format!("output key '{key}' must have a string value"),
+                    })?
+                    .to_string(),
+            ));
         } else {
             match key.to_lowercase().as_str() {
                 "h" | "headers" => req_headers = Some(val.clone()),
@@ -154,15 +172,15 @@ fn resolve_request<'a>(line: &str, config: &'a Config) -> (
     // Resolve headers against full URL (before stripping query) for rule matching
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 
-    (method, url, query, merged_headers, body, md, outputs)
+    Ok((method, url, query, merged_headers, body, md, outputs))
 }
 
 /// Expand a request line with full config resolution: API aliases, header
 /// shortcuts, env vars, rule matching, header merging. Returns the resolved
 /// request as a YAML flow string with query params inlined in the URL.
-pub fn expand_request(line: &str, config: &Config) -> String {
+pub fn expand_request(line: &str, config: &Config) -> Result<String, RequestError> {
     let (method, mut url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config);
+        resolve_request(line, config)?;
 
     yttp::append_query_to_url(&mut url, &query).ok();
 
@@ -180,15 +198,15 @@ pub fn expand_request(line: &str, config: &Config) -> String {
     for (k, v) in outputs {
         result.insert(k, Value::String(v));
     }
-    to_yaml_flow(&Value::Object(result))
+    Ok(to_yaml_flow(&Value::Object(result)))
 }
 
 /// Expand a request with full config resolution, keeping query params and body
 /// in structured form. URL query string is extracted into `q:`, body is kept
 /// as a structured object when Content-Type implies structure (JSON, form, multipart).
-pub fn expand_request_structured(line: &str, config: &Config) -> String {
+pub fn expand_request_structured(line: &str, config: &Config) -> Result<String, RequestError> {
     let (method, url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config);
+        resolve_request(line, config)?;
 
     // Split URL into base (without query string) and extract query params
     let mut query_obj = Map::new();
@@ -227,7 +245,7 @@ pub fn expand_request_structured(line: &str, config: &Config) -> String {
     for (k, v) in outputs {
         result.insert(k, Value::String(v));
     }
-    to_yaml_flow(&Value::Object(result))
+    Ok(to_yaml_flow(&Value::Object(result)))
 }
 
 /// Serialize a serde_json::Value as single-line YAML flow style.
@@ -295,9 +313,11 @@ fn needs_yaml_quoting(s: &str) -> bool {
     s.ends_with(':') || s.ends_with(' ')
 }
 
-async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> OutputBuffer {
-    let json = parse_input(line);
-    let obj = json.as_object().unwrap();
+async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> Result<OutputBuffer, RequestError> {
+    let json = parse_input(line)?;
+    let obj = json.as_object().ok_or_else(|| RequestError::Structure {
+        msg: "request must be a JSON/YAML object".to_string(),
+    })?;
 
     let mut method = None;
     let mut url = None;
@@ -310,10 +330,21 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     for (key, val) in obj {
         if let Some(m) = resolve_method(key) {
             method = Some(m);
-            url = Some(val.as_str().unwrap().to_string());
+            url = Some(
+                val.as_str()
+                    .ok_or_else(|| RequestError::Structure {
+                        msg: format!("URL for '{key}' must be a string"),
+                    })?
+                    .to_string(),
+            );
         } else if config::is_output_key(key) {
             let dest = parse_dest(key);
-            let fmt = parse_format(val.as_str().unwrap());
+            let fmt = parse_format(
+                val.as_str()
+                    .ok_or_else(|| RequestError::Structure {
+                        msg: format!("output key '{key}' must have a string value"),
+                    })?,
+            );
             outputs.push((dest, fmt));
         } else {
             match key.to_lowercase().as_str() {
@@ -347,8 +378,10 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         maybe_auto_stream(dest, fmt, concurrent);
     }
 
-    let method = method.expect("no HTTP method found");
-    let mut url = config::expand_api_url(&url.expect("no URL found"), &config.apis);
+    let method = method.ok_or_else(|| RequestError::Structure {
+        msg: "no HTTP method found (use g, p, put, d, patch, ...)".to_string(),
+    })?;
+    let mut url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
     yttp::append_query_to_url(&mut url, &query).ok();
 
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
@@ -430,7 +463,10 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
 
     let req_status_line = format!("{method} {url}");
 
-    let parsed = Url::parse(&url).unwrap();
+    let parsed = Url::parse(&url).map_err(|e| RequestError::Url {
+        url: url.clone(),
+        msg: e.to_string(),
+    })?;
     let url_parts = UrlParts {
         scheme: parsed.scheme().to_string(),
         host: parsed.host_str().unwrap_or("").to_string(),
@@ -489,11 +525,13 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
                     }
                 }
             }
-            return buf;
+            return Ok(buf);
         }
     }
 
-    let resp = req.send().await.unwrap();
+    let resp = req.send().await.map_err(|e| RequestError::Network {
+        msg: e.to_string(),
+    })?;
 
     let version = format!("{:?}", resp.version());
     let status = resp.status();
@@ -556,7 +594,9 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         let mut buffered_bytes = Vec::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
+            let chunk = chunk.map_err(|e| RequestError::Network {
+                msg: format!("error reading response: {e}"),
+            })?;
             for f in &mut stream_files {
                 f.write_all(&chunk).unwrap();
             }
@@ -573,7 +613,9 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
 
         buffered_bytes
     } else {
-        resp.bytes().await.unwrap().to_vec()
+        resp.bytes().await.map_err(|e| RequestError::Network {
+            msg: format!("error reading response: {e}"),
+        })?.to_vec()
     };
 
     // Store in cache if configured
@@ -621,7 +663,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         }
     }
 
-    buf
+    Ok(buf)
 }
 
 fn flush_output_locked(
@@ -651,21 +693,26 @@ fn flush_output_locked(
     }
 }
 
-fn pre_parse_for_matching(line: &str, apis: &std::collections::HashMap<String, String>) -> (String, String, Option<Value>) {
-    let json = parse_input(line);
-    let obj = json.as_object().unwrap();
+fn pre_parse_for_matching(line: &str, apis: &std::collections::HashMap<String, String>) -> Result<(String, String, Option<Value>), RequestError> {
+    let json = parse_input(line)?;
+    let obj = json.as_object().ok_or_else(|| RequestError::Structure {
+        msg: "request must be a JSON/YAML object".to_string(),
+    })?;
     let mut method = None;
     let mut url = None;
     let mut md = None;
     for (key, val) in obj {
         if let Some(m) = resolve_method(key) {
             method = Some(m.to_string());
-            url = Some(config::expand_api_url(val.as_str().unwrap(), apis));
+            let u = val.as_str().ok_or_else(|| RequestError::Structure {
+                msg: format!("URL for '{key}' must be a string"),
+            })?;
+            url = Some(config::expand_api_url(u, apis));
         } else if key.to_lowercase() == "md" {
             md = Some(val.clone());
         }
     }
-    (method.unwrap_or_default(), url.unwrap_or_default(), md)
+    Ok((method.unwrap_or_default(), url.unwrap_or_default(), md))
 }
 
 /// Streaming stdin reader that yields one request at a time.
@@ -768,8 +815,13 @@ async fn main() {
 
     let config = match &args.config {
         Some(cfg_str) => {
-            let json = parse_input(cfg_str);
-            Config::parse(&json)
+            match parse_input(cfg_str) {
+                Ok(json) => Config::parse(&json),
+                Err(e) => {
+                    eprintln!("{}", e.display_colored());
+                    std::process::exit(1);
+                }
+            }
         }
         None => Config::empty(),
     };
@@ -858,7 +910,14 @@ async fn main() {
                          idx: usize,
                          concurrent: bool,
                          yaml_mode: bool| {
-        let (method_str, url_str, md) = pre_parse_for_matching(&line, &config.apis);
+        let pre_parsed = match pre_parse_for_matching(&line, &config.apis) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("{}", e.display_colored());
+                return tokio::spawn(async {});
+            }
+        };
+        let (method_str, url_str, md) = pre_parsed;
         let matching_rules = config.matching_concurrency_rules(&method_str, &url_str, &md);
 
         let needed_sems: Vec<Arc<Semaphore>> = matching_rules
@@ -872,7 +931,13 @@ async fn main() {
             for s in &needed_sems {
                 _rule_permits.push(s.acquire().await.unwrap());
             }
-            let buf = execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores), color_stdout, color_stderr).await;
+            let buf = match execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores), color_stdout, color_stderr).await {
+                Ok(buf) => buf,
+                Err(e) => {
+                    eprintln!("{}", e.display_colored());
+                    return;
+                }
+            };
             flush_output_locked(
                 buf,
                 &stdout_lock,
@@ -1041,9 +1106,9 @@ mod tests {
 
     #[test]
     fn expand_request_api_alias_and_headers() {
-        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#);
+        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#).unwrap();
         let config = Config::parse(&config_json);
-        let result = expand_request(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config);
+        let result = expand_request(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config).unwrap();
         // Output is YAML flow style, round-trips through yttp::parse
         let parsed = yttp::parse(&result).unwrap();
         let obj = parsed.as_object().unwrap();
@@ -1061,7 +1126,7 @@ mod tests {
         let result = expand_request(
             r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let obj = parsed.as_object().unwrap();
 
@@ -1074,9 +1139,9 @@ mod tests {
     fn expand_request_rule_headers() {
         let config_json = parse_input(
             r#"{"rules": [{"match": {"u": "**example**"}, "h": {"X-From-Rule": "yes"}}]}"#,
-        );
+        ).unwrap();
         let config = Config::parse(&config_json);
-        let result = expand_request(r#"{"g": "https://example.com/api"}"#, &config);
+        let result = expand_request(r#"{"g": "https://example.com/api"}"#, &config).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let h = parsed.get("h").unwrap().as_object().unwrap();
         assert_eq!(h.get("X-From-Rule").unwrap(), "yes");
@@ -1092,7 +1157,7 @@ mod tests {
     fn config_summary_with_fields() {
         let config_json = parse_input(
             r#"{"api": {"main": "localhost:3000", "staging": "staging.example.com"}, "h": {"X-Test": "1"}, "rules": [{"h": {"X-R": "1"}}], "concurrency": 5}"#,
-        );
+        ).unwrap();
         let config = Config::parse(&config_json);
         let summary = config.summary();
         assert!(summary.contains("api:"));
@@ -1103,20 +1168,20 @@ mod tests {
 
     #[test]
     fn arcswap_config_replacement() {
-        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Old": "1"}}"#);
+        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Old": "1"}}"#).unwrap();
         let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
 
         // Initial state
-        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load());
+        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
         assert!(result.contains("localhost:3000"));
         assert!(result.contains("X-Old"));
 
         // Replace config
-        let new_config_json = parse_input(r#"{"api": "example.com:8080", "h": {"X-New": "2"}}"#);
+        let new_config_json = parse_input(r#"{"api": "example.com:8080", "h": {"X-New": "2"}}"#).unwrap();
         config.store(Arc::new(Config::parse(&new_config_json)));
 
         // Verify new config is used
-        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load());
+        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
         assert!(result.contains("example.com:8080"));
         assert!(result.contains("X-New"));
         assert!(!result.contains("X-Old"));
@@ -1125,7 +1190,7 @@ mod tests {
     #[test]
     fn expand_request_yaml_flow_format() {
         let config = Config::empty();
-        let result = expand_request(r#"{"g": "https://example.com"}"#, &config);
+        let result = expand_request(r#"{"g": "https://example.com"}"#, &config).unwrap();
         // Should be YAML flow style, not JSON — no quoted keys
         assert!(result.starts_with('{'));
         assert!(result.contains("get:"));
@@ -1171,7 +1236,7 @@ mod tests {
         let result = expand_request(
             r#"{"g": "https://example.com/search", "q": {"term": "foo", "limit": 10}}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let url = parsed.get("get").unwrap().as_str().unwrap();
         assert!(url.contains("term=foo"));
@@ -1186,7 +1251,7 @@ mod tests {
         let result = expand_request_structured(
             r#"{"g": "https://example.com/search?a=1&b=2"}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let url = parsed.get("get").unwrap().as_str().unwrap();
         assert!(!url.contains('?'), "URL should have no query string: {url}");
@@ -1202,7 +1267,7 @@ mod tests {
         let result = expand_request_structured(
             r#"{"g": "https://example.com/search?a=1", "q": {"b": 2}}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let url = parsed.get("get").unwrap().as_str().unwrap();
         assert_eq!(url, "https://example.com/search");
@@ -1217,7 +1282,7 @@ mod tests {
         let result = expand_request_structured(
             r#"{"g": "https://example.com/path"}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         assert!(parsed.get("q").is_none());
     }
@@ -1228,7 +1293,7 @@ mod tests {
         let result = expand_request_structured(
             r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
             &config,
-        );
+        ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         assert_eq!(
             parsed.get("b").unwrap().as_object().unwrap().get("name").unwrap(),
@@ -1244,13 +1309,46 @@ mod tests {
         let result = expand_request_structured(
             r#"{"g": "https://example.com/search?term=foo", "q": {"limit": 10}, "h": {"X-Test": "1"}}"#,
             &config,
-        );
+        ).unwrap();
         // Should parse without error
         let parsed = yttp::parse(&result).unwrap();
         assert!(parsed.is_object());
         // Can be fed back into expand_request_structured
-        let result2 = expand_request_structured(&result, &config);
+        let result2 = expand_request_structured(&result, &config).unwrap();
         let parsed2 = yttp::parse(&result2).unwrap();
         assert_eq!(parsed, parsed2, "Should be idempotent");
+    }
+
+    #[test]
+    fn expand_request_parse_error() {
+        let config = Config::empty();
+        let result = expand_request("{broken", &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            RequestError::Parse { .. } => {}
+            _ => panic!("expected Parse error, got: {err}"),
+        }
+    }
+
+    #[test]
+    fn expand_request_no_method_ok() {
+        // No method defaults to GET with empty URL
+        let config = Config::empty();
+        let result = expand_request(r#"{"h": {"Accept": "j!"}}"#, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn expand_request_url_not_string_error() {
+        let config = Config::empty();
+        let result = expand_request(r#"{"g": {"nested": true}}"#, &config);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RequestError::Structure { msg } => {
+                assert!(msg.contains("must be a string"), "msg: {msg}");
+            }
+            other => panic!("expected Structure error, got: {other}"),
+        }
     }
 }
