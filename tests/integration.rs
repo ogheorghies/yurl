@@ -540,7 +540,7 @@ fn api_alias_single() {
 #[test]
 fn api_alias_multiple() {
     let b = base();
-    let config = format!(r#"{{"apis": {{"main": "{b}", "other": "{b}"}}}}"#);
+    let config = format!(r#"{{"api": {{"main": "{b}", "other": "{b}"}}}}"#);
     let out = jurl_with_config(
         r#"{"g": "main!/get", "1": "b"}"#,
         Some(&config),

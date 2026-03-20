@@ -79,19 +79,23 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
     } else {
         String::new()
     };
+    let expand = style(".x").bold();
     format!("\n\
 Single line:  {{g: https://httpbin.org/get}}\n\
 Multi-line :  type YAML, then --- to send.\n\
+  {expand}      expand request with config, review before sending\n\
 {step_hint}\
 {history_line}\
   {ctrl_d} to exit.\n")
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
+/// `on_expand` resolves a request with full config (API aliases, headers, shortcuts).
 /// If `step_queue` is Some, enables .next and .go commands for stepping through piped requests.
-pub fn run<F>(mut on_request: F, step_queue: Option<VecDeque<String>>)
+pub fn run<F, G>(mut on_request: F, on_expand: G, step_queue: Option<VecDeque<String>>)
 where
     F: FnMut(String),
+    G: Fn(String) -> String,
 {
     let history_path = dirs_hint();
     let mut queue = step_queue.unwrap_or_default();
@@ -147,6 +151,30 @@ where
                         }
                     } else {
                         eprintln!("  no more requests");
+                    }
+                    continue;
+                }
+
+                // Handle .x command — expand request with config
+                if let Some(req) = trimmed.strip_prefix(".x ") {
+                    let req = req.trim();
+                    if req.is_empty() {
+                        eprintln!("  usage: .x {{request}}");
+                        continue;
+                    }
+                    let expanded = on_expand(req.to_string());
+                    match rl.readline_with_initial(PROMPT, (&expanded, "")) {
+                        Ok(edited) => {
+                            let edited = edited.trim().to_string();
+                            if !edited.is_empty() {
+                                rl.add_history_entry(&edited).ok();
+                                on_request(edited);
+                            }
+                        }
+                        Err(rustyline::error::ReadlineError::Interrupted) => {
+                            eprintln!("  (skipped)");
+                        }
+                        Err(_) => break,
                     }
                     continue;
                 }

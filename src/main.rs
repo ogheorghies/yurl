@@ -109,6 +109,57 @@ fn parse_input(s: &str) -> Value {
     yttp::parse(s).unwrap()
 }
 
+/// Expand a request line with full config resolution: API aliases, header
+/// shortcuts, env vars, rule matching, header merging. Returns the resolved
+/// request as a JSON string suitable for re-editing and execution.
+fn expand_request(line: &str, config: &Config) -> String {
+    let json = parse_input(line);
+    let obj = json.as_object().unwrap();
+
+    let mut method = None;
+    let mut url = None;
+    let mut req_headers = None;
+    let mut body = None;
+    let mut md = None;
+    let mut outputs: Vec<(String, String)> = Vec::new();
+
+    for (key, val) in obj {
+        if let Some(m) = resolve_method(key) {
+            method = Some(m);
+            url = Some(val.as_str().unwrap().to_string());
+        } else if config::is_output_key(key) {
+            outputs.push((key.clone(), val.as_str().unwrap().to_string()));
+        } else {
+            match key.to_lowercase().as_str() {
+                "h" | "headers" => req_headers = Some(val.clone()),
+                "b" | "body" => body = Some(val.clone()),
+                "md" => md = Some(val.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    let method = method.unwrap_or("GET");
+    let url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
+    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
+
+    let mut result = Map::new();
+    result.insert(method.to_lowercase(), Value::String(url));
+    if !merged_headers.is_empty() {
+        result.insert("h".to_string(), Value::Object(merged_headers));
+    }
+    if let Some(b) = body {
+        result.insert("b".to_string(), b);
+    }
+    if let Some(m) = md {
+        result.insert("md".to_string(), m);
+    }
+    for (k, v) in outputs {
+        result.insert(k, Value::String(v));
+    }
+    serde_json::to_string(&Value::Object(result)).unwrap()
+}
+
 async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> OutputBuffer {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
@@ -726,12 +777,13 @@ async fn main() {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 
+        let expand_config = Arc::clone(&config);
         let repl_handle = std::thread::spawn(move || {
             interactive::run(|line| {
                 let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
                 tx.send((line, done_tx)).ok();
                 done_rx.recv().ok();
-            }, step_queue);
+            }, |line| expand_request(&line, &expand_config), step_queue);
         });
 
         // Process lines as they arrive from the REPL
@@ -836,5 +888,54 @@ async fn main() {
         } else {
             wb.finish();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_request_api_alias_and_headers() {
+        let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#);
+        let config = Config::parse(&config_json);
+        let result = expand_request(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        // Method expanded to full name, URL expanded with API alias and scheme
+        assert_eq!(obj.get("get").unwrap(), "http://localhost:3000/toys");
+
+        // Headers merged: config default + request shortcut expanded
+        let h = obj.get("h").unwrap().as_object().unwrap();
+        assert_eq!(h.get("X-Debug").unwrap(), "1");
+        assert_eq!(h.get("Authorization").unwrap(), "Bearer tok");
+    }
+
+    #[test]
+    fn expand_request_preserves_body_and_outputs() {
+        let config = Config::empty();
+        let result = expand_request(
+            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
+            &config,
+        );
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        assert_eq!(obj.get("post").unwrap(), "https://example.com");
+        assert_eq!(obj.get("b").unwrap().as_object().unwrap().get("name").unwrap(), "test");
+        assert_eq!(obj.get("1").unwrap(), "j(s,b)");
+    }
+
+    #[test]
+    fn expand_request_rule_headers() {
+        let config_json = parse_input(
+            r#"{"rules": [{"match": {"u": "**example**"}, "h": {"X-From-Rule": "yes"}}]}"#,
+        );
+        let config = Config::parse(&config_json);
+        let result = expand_request(r#"{"g": "https://example.com/api"}"#, &config);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let h = parsed.get("h").unwrap().as_object().unwrap();
+        assert_eq!(h.get("X-From-Rule").unwrap(), "yes");
     }
 }

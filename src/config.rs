@@ -87,15 +87,18 @@ impl Config {
             .unwrap_or_default();
 
         let mut apis = HashMap::new();
-        if let Some(Value::String(url)) = obj.get("api") {
-            apis.insert("api".to_string(), url.clone());
-        }
-        if let Some(Value::Object(map)) = obj.get("apis") {
-            for (k, v) in map {
-                if let Some(url) = v.as_str() {
-                    apis.insert(k.clone(), url.to_string());
+        match obj.get("api") {
+            Some(Value::String(url)) => {
+                apis.insert("api".to_string(), url.clone());
+            }
+            Some(Value::Object(map)) => {
+                for (k, v) in map {
+                    if let Some(url) = v.as_str() {
+                        apis.insert(k.clone(), url.to_string());
+                    }
                 }
             }
+            _ => {}
         }
 
         Config {

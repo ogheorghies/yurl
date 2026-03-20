@@ -321,11 +321,11 @@ Merge order: config defaults → matching rules (in order) → per-request.
 Define named base URLs in config to avoid repeating long endpoints:
 
 ```yaml
-# Single alias
+# Single alias (name defaults to "api")
 api: https://api.example.com/v1
 
 # Multiple aliases
-apis:
+api:
   prod: https://api.example.com/v1
   staging: https://staging.example.com/v1
 ```
@@ -338,7 +338,7 @@ Use `name!/path` in request URLs:
 {g: staging!/toys}       # → GET https://staging.example.com/v1/toys
 ```
 
-`api:` is shorthand for `apis: {api: ...}`. Both can coexist. Rules match against the expanded URL. Unrecognized `name!` prefixes pass through as-is.
+`api: <url>` defines a single alias used as `api!`. `api: {name: url, ...}` defines multiple named aliases. Rules match against the expanded URL. If `name` doesn't match any alias, the URL is used unchanged (e.g. `foo!/bar` stays `foo!/bar`).
 
 ### Step mode
 
@@ -352,6 +352,7 @@ This enters the REPL with piped requests available as a queue. Commands:
 
 - **`.next`** (`.n`) — loads the next piped request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
 - **`.go`** (`.g`) — executes all remaining piped requests. Ctrl-C breaks back to the prompt.
+- **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.next`: press Ctrl-A and prepend `.x ` to expand a queued request.
 - **`.help`** (`.h`) — shows help.
 
 You can also type ad-hoc requests at any time, just like normal interactive mode.
@@ -816,8 +817,8 @@ Passed as a CLI argument. Acts as middleware — applied to every request before
 
 ```yaml
 # --- API aliases ---
-api: https://api.example.com/v1      # single: use as api!/path
-apis:                                # multiple: use as prod!/path, staging!/path
+api: https://api.example.com/v1      # string: use as api!/path
+api:                                 # object: use as prod!/path, staging!/path
   prod: https://api.example.com/v1
   staging: https://staging.example.com/v1
 
