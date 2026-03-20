@@ -33,9 +33,9 @@ impl Hinter for YurlHelper {
     fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
         if line.is_empty() {
             let hint = if self.step_mode {
-                "requests are piped. type .next — or .help for more"
+                "requests are piped. type .next — .help or .t"
             } else {
-                "type request — .help for more"
+                "type request — .help or .t"
             };
             Some(format!("\x1b[2m{hint}\x1b[0m"))
         } else {
@@ -93,12 +93,14 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
   {c}          show current config\n\
   {c}  {{cfg}}   replace active config\n\
 {step_cmds}\
+  {t}          show request templates\n\
   {help}  {hdot}   show this help\n\
   {ctrl_d}      exit\n\
 {history_line}\n",
         x = style(".x").bold(),
         xx = style(".xx").bold(),
         c = style(".c").bold(),
+        t = style(".t").bold(),
         help = style(".help").bold(), hdot = style(".h").dim(),
         ctrl_d = style("Ctrl-D").bold(),
     )
@@ -200,6 +202,20 @@ where
                 // Handle .help command
                 if trimmed == ".help" || trimmed == ".h" {
                     eprint!("{}", help_text(&history_path, step_mode));
+                    continue;
+                }
+
+                // Handle .t command — show request templates
+                if trimmed == ".t" {
+                    eprintln!("\n\
+  {{g: url}}                                    GET\n\
+  {{g: url, q: {{k: v}}}}                         GET + query\n\
+  {{p: url, b: {{k: v}}}}                         POST json\n\
+  {{p: url, h: {{ct!: f!}}, b: {{k: v}}}}           POST form\n\
+  {{p: url, h: {{ct!: m!}}, b: {{k: file://path}}}} POST multipart\n\
+  {{p: url, h: {{a!: bearer!tok}}, b: {{k: v}}}}    POST + headers auth\n\
+  {{put: url, b: {{k: v}}}}                       PUT\n\
+  {{d: url}}                                    DELETE\n");
                     continue;
                 }
 
