@@ -1145,7 +1145,7 @@ mod tests {
     fn expand_request_preserves_body_and_outputs() {
         let config = Config::empty();
         let result = expand_request(
-            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
+            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s b)"}"#,
             &config,
         ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
@@ -1153,7 +1153,7 @@ mod tests {
 
         assert_eq!(obj.get("post").unwrap(), "https://example.com");
         assert_eq!(obj.get("b").unwrap().as_object().unwrap().get("name").unwrap(), "test");
-        assert_eq!(obj.get("1").unwrap(), "j(s,b)");
+        assert_eq!(obj.get("1").unwrap(), "j(s b)");
     }
 
     #[test]
@@ -1312,7 +1312,7 @@ mod tests {
     fn structured_preserves_body_and_outputs() {
         let config = Config::empty();
         let result = expand_request_structured(
-            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
+            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s b)"}"#,
             &config,
         ).unwrap();
         let parsed = yttp::parse(&result).unwrap();
@@ -1320,7 +1320,7 @@ mod tests {
             parsed.get("b").unwrap().as_object().unwrap().get("name").unwrap(),
             "test"
         );
-        assert_eq!(parsed.get("1").unwrap(), "j(s,b)");
+        assert_eq!(parsed.get("1").unwrap(), "j(s b)");
     }
 
     #[test]

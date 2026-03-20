@@ -31,7 +31,7 @@ md:
 1: j(h)
 2: s
 file://{{md.env}}/{{idx}}.raw: b
-file://out.yaml: y(i.h, o.h)
+file://out.yaml: y(i.h o.h)
 EOF
 ```
 
@@ -114,7 +114,7 @@ Only pure `$VAR` values are expanded — the entire string must be `$` followed 
 
 Destinations: `"1"` (stdout), `"2"` (stderr), or `"file://path"` (supports `{{atom}}` templates). Multiple destinations per request.
 
-`j(...)` wraps atoms as JSON, `y(...)` as YAML. Default: `j(s!,h,b)` for jurl, `y(s!,h,b)` for yurl.
+`j(...)` wraps atoms as JSON, `y(...)` as YAML. Default: `j(s! h b)` for jurl, `y(s! h b)` for yurl.
 
 Body encoding inside `j()`/`y()`: JSON body becomes structured value, UTF-8 text becomes string, binary becomes base64. Outside `j()`/`y()`, `b` is raw bytes.
 
@@ -139,7 +139,7 @@ cat <<'EOF' > /tmp/api-config.yaml
 h:
   a!: bearer!my-token
   User-Agent: jurl/0.1
-1: j(idx,md,s.code)
+1: j(idx md s.code)
 
 rules:
   - match: {m: POST}
@@ -221,7 +221,7 @@ $ echo '
 {g: api!/toys}
 {g: api!/toys/1}
 {p: api!/toys, b: {name: Owl}}
-' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s,b)"}'
+' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
 yurl v0.5.0
 
@@ -230,7 +230,7 @@ yurl v0.5.0
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
-> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s,b)"}
+> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s b)"}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}
 
 > .go                                # run remaining 2 requests

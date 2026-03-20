@@ -80,7 +80,7 @@ fn raw_status() {
 
 #[test]
 fn status_parts() {
-    let out = jurl(&format!(r#"{{"g": "{}/get", "1": "j(s.code,s.text,s.version)"}}"#, base()));
+    let out = jurl(&format!(r#"{{"g": "{}/get", "1": "j(s.code s.text s.version)"}}"#, base()));
     let json = parse_json(&out);
     assert_eq!(json["s"]["c"], 200);
     assert_eq!(json["s"]["t"], "OK");
@@ -92,7 +92,7 @@ fn status_parts() {
 #[test]
 fn method_and_url_atoms() {
     let b = base();
-    let out = jurl(&format!(r#"{{"g": "{b}/get", "1": "j(m,u)"}}"#));
+    let out = jurl(&format!(r#"{{"g": "{b}/get", "1": "j(m u)"}}"#));
     let json = parse_json(&out);
     assert_eq!(json["m"], "GET");
     assert_eq!(json["u"], format!("{b}/get"));
@@ -251,7 +251,7 @@ fn ct_prefix_i() {
 
 #[test]
 fn metadata_scalar() {
-    let out = jurl(&format!(r#"{{"g": "{}/get", "md": "batch-1", "1": "j(md,s.code)"}}"#, base()));
+    let out = jurl(&format!(r#"{{"g": "{}/get", "md": "batch-1", "1": "j(md s.code)"}}"#, base()));
     let json = parse_json(&out);
     assert_eq!(json["md"], "batch-1");
     assert_eq!(json["s"]["c"], 200);

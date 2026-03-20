@@ -91,11 +91,9 @@ pub fn parse_atom(s: &str) -> Option<Atom> {
 
 fn parse_atom_list(inner: &str) -> Result<Vec<Atom>, String> {
     inner
-        .split(',')
-        .map(|a| {
-            let a = a.trim();
-            parse_atom(a).ok_or_else(|| format!("unknown atom: {a}"))
-        })
+        .split_whitespace()
+        .filter(|a| !a.is_empty())
+        .map(|a| parse_atom(a).ok_or_else(|| format!("unknown atom: {a}")))
         .collect()
 }
 
@@ -106,7 +104,7 @@ pub fn parse_format(s: &str) -> Result<Format, String> {
     } else if s.starts_with("y(") && s.ends_with(')') {
         Ok(Format::Yaml(parse_atom_list(&s[2..s.len() - 1])?))
     } else if s.starts_with("j(") || s.starts_with("y(") {
-        Err(format!("unclosed format: {s} (missing closing parenthesis — quote the value if it contains commas)"))
+        Err(format!("unclosed format: {s} (missing closing parenthesis)"))
     } else {
         Ok(Format::Raw(parse_atom(s).ok_or_else(|| format!("unknown format: {s}"))?))
     }

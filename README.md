@@ -25,7 +25,7 @@ Batch with API aliases, auth from env, JSON output:
 echo '
 {g: api!/get}
 {p: api!/post, b: {name: Owl, price: 5.99}}
-' | yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s,b)"}'
+' | yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s b)"}'
 ```
 
 ## Reference
@@ -40,7 +40,7 @@ g: https://example.com                # method shortcuts: g p d, or full names
 h: {a!: my-token, c!: j!}             # header key/value shortcuts expand in place
 b: {city: Berlin}                     # body encoding follows Content-Type
 
-# response — default output: y(s!,h,b)
+# response — default output: y(s! h b)
 s: {v: HTTP/1.1, c: 200, t: OK}       # s! -> status inline object
 h: {content-type: application/json}   # response headers
 b: {city: Berlin, lang: de}           # JSON -> structured, UTF-8 -> string, binary -> base64
@@ -53,12 +53,12 @@ b: {city: Berlin, lang: de}           # JSON -> structured, UTF-8 -> string, bin
 md: {env: prod, batch: 7}            # available in output and file path templates
 
 # output destinations
-1: j(s!,h,b)                          # stdout (jurl default)
-1: y(s!,h,b)                          # stdout (yurl default)
+1: j(s! h b)                          # stdout (jurl default)
+1: y(s! h b)                          # stdout (yurl default)
 2: s                                  # stderr
 file://response.raw: b                # raw body (no base64)
 file://large.bin?stream: b            # explicit streaming
-file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # templated path, auto-streamed
+file://{{md.env}}/{{idx}}.json: j(s! h b)  # templated path, auto-streamed
 
 # atoms
 # response:  b    h    s!   s    s.c  s.t  s.v  (or s.code s.text s.version)
@@ -77,7 +77,7 @@ h:                                    # default headers
   a!: bearer!$TOKEN
   User-Agent: yurl/0.1
 
-1: j(idx, s.code)                     # default output
+1: j(idx s.code)                     # default output
 
 concurrency: 10                       # global max (default: 1)
 progress: true                        # spinner or N for progress bar
@@ -153,7 +153,7 @@ URLs without a scheme: `localhost`/`127.0.0.1`/`[::1]`/bare hostnames get `http:
 
 Destinations: `"1"` (stdout), `"2"` (stderr), `"file://path"` (supports `{{atom}}` templates).
 
-Default: `y(s!,h,b)` for yurl, `j(s!,h,b)` for jurl (same binary, JSON output). Per-request output keys fully replace config defaults.
+Default: `y(s! h b)` for yurl, `j(s! h b)` for jurl (same binary, JSON output). Per-request output keys fully replace config defaults.
 
 ### Format atoms
 
@@ -235,7 +235,7 @@ $ echo '
 {g: api!/toys}
 {g: api!/toys/1}
 {p: api!/toys, b: {name: Owl}}
-' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s,b)"}'
+' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
 yurl v0.6.1
 
@@ -244,7 +244,7 @@ yurl v0.6.1
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
-> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s,b)"}
+> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s b)"}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}
 
 > .go                                # run remaining 2 requests

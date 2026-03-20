@@ -18,7 +18,7 @@ echo '{g: https://httpbin.org/get, 1: s}' | jurl
 # HTTP/1.1 200 OK
 
 # status code and text as JSON
-echo '{g: https://httpbin.org/get, 1: j(s.code,s.text)}' | jurl
+echo '{g: https://httpbin.org/get, 1: j(s.code s.text)}' | jurl
 # {"s": {"c": 200, "t": "OK"}}
 ```
 
@@ -81,7 +81,7 @@ echo '{g: https://httpbin.org/get, file://./out/{{u.host}}/{{m}}.txt: b}' | jurl
 
 ```bash
 # scalar metadata
-echo '{g: https://httpbin.org/get, md: batch-1, 1: j(idx,md,s.code)}' | jurl
+echo '{g: https://httpbin.org/get, md: batch-1, 1: j(idx md s.code)}' | jurl
 # {"idx": 0, "md": "batch-1", "s": {"code": 200}}
 
 # object metadata with field selection
@@ -93,12 +93,12 @@ echo '{g: https://httpbin.org/get, md: {id: 42, tag: test}, 1: j(md.id)}' | jurl
 
 ```bash
 # JSONL with idx
-printf '{g: https://httpbin.org/get}\n{g: https://httpbin.org/get}\n' | jurl '{1: j(idx,s.code)}'
+printf '{g: https://httpbin.org/get}\n{g: https://httpbin.org/get}\n' | jurl '{1: j(idx s.code)}'
 # {"idx": 0, "s": {"code": 200}}
 # {"idx": 1, "s": {"code": 200}}
 
 # per-request output overrides config default
-printf '{g: https://httpbin.org/get}\n{g: https://httpbin.org/get, 1: s}\n' | jurl '{1: j(idx,s.code)}'
+printf '{g: https://httpbin.org/get}\n{g: https://httpbin.org/get, 1: s}\n' | jurl '{1: j(idx s.code)}'
 # {"idx": 0, "s": {"code": 200}}
 # HTTP/1.1 200 OK
 ```
@@ -125,7 +125,7 @@ echo '{g: https://httpbin.org/get, h: {X-Val: custom}, 1: b}' | jurl '{h: {X-Val
 # two APIs with different tokens
 cat <<'EOF' > /tmp/multi-api.yaml
 h: {User-Agent: jurl/0.1}
-1: j(idx,md,s.code)
+1: j(idx md s.code)
 rules:
   - match: {u: "**httpbin.org**"}
     h: {a!: bearer!httpbin-token}
