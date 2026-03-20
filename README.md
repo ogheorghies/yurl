@@ -1,9 +1,9 @@
 # yurl
 
-HTTP client built for clarity. One-off and batch requests with concurrency and streaming.
-Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#reference) JSON/YAML facade. Adds output routing and rule-based middleware.
+HTTP client — [batch](#request), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
+Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#reference) JSON/YAML facade.
 
-[Request](#request) · [Output](#output) · [Config](#batch-config) · [Reference](#reference) · [Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
+[Reference](#reference) · [Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
 
 Install: `cargo install yurl`
 
