@@ -56,9 +56,9 @@ md: {env: prod, batch: 7}            # available in output and file path templat
 1: j(s!,h,b)                          # stdout (jurl default)
 1: y(s!,h,b)                          # stdout (yurl default)
 2: s                                  # stderr
-file://response.raw: b                # file
-file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # templated path, auto-streamed
+file://response.raw: b                # raw body (no base64)
 file://large.bin?stream: b            # explicit streaming
+file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # templated path, auto-streamed
 
 # atoms
 # response:  b    h    s!   s    s.c  s.t  s.v  (or s.code s.text s.version)
