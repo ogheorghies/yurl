@@ -161,7 +161,72 @@ pub fn expand_request(line: &str, config: &Config) -> String {
     for (k, v) in outputs {
         result.insert(k, Value::String(v));
     }
-    serde_json::to_string(&Value::Object(result)).unwrap()
+    to_yaml_flow(&Value::Object(result))
+}
+
+/// Serialize a serde_json::Value as single-line YAML flow style.
+fn to_yaml_flow(val: &Value) -> String {
+    match val {
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => yaml_flow_scalar(s),
+        Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(to_yaml_flow).collect();
+            format!("[{}]", items.join(", "))
+        }
+        Value::Object(map) => {
+            let pairs: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", yaml_flow_scalar(k), to_yaml_flow(v)))
+                .collect();
+            format!("{{{}}}", pairs.join(", "))
+        }
+    }
+}
+
+fn yaml_flow_scalar(s: &str) -> String {
+    if s.is_empty() || needs_yaml_quoting(s) {
+        let escaped = s
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t");
+        format!("\"{escaped}\"")
+    } else {
+        s.to_string()
+    }
+}
+
+fn needs_yaml_quoting(s: &str) -> bool {
+    // Reserved YAML words
+    match s {
+        "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~"
+        | "True" | "False" | "Null" | "Yes" | "No" | "On" | "Off"
+        | "TRUE" | "FALSE" | "NULL" | "YES" | "NO" | "ON" | "OFF" => return true,
+        _ => {}
+    }
+    // Looks like a number
+    if s.parse::<f64>().is_ok() {
+        return true;
+    }
+    // Flow indicators or control chars
+    if s.contains(|c: char| matches!(c, '{' | '}' | '[' | ']' | ',' | '\n' | '\r' | '\t')) {
+        return true;
+    }
+    // Mapping indicator or comment
+    if s.contains(": ") || s.contains(" #") {
+        return true;
+    }
+    // Starts with problematic chars
+    if s.starts_with(|c: char| {
+        matches!(c, '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' | '?' | '-' | ' ' | ':' | '#')
+    }) {
+        return true;
+    }
+    // Ends with colon or space
+    s.ends_with(':') || s.ends_with(' ')
 }
 
 async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> OutputBuffer {
@@ -913,13 +978,12 @@ mod tests {
         let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#);
         let config = Config::parse(&config_json);
         let result = expand_request(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        // Output is YAML flow style, round-trips through yttp::parse
+        let parsed = yttp::parse(&result).unwrap();
         let obj = parsed.as_object().unwrap();
 
-        // Method expanded to full name, URL expanded with API alias and scheme
         assert_eq!(obj.get("get").unwrap(), "http://localhost:3000/toys");
 
-        // Headers merged: config default + request shortcut expanded
         let h = obj.get("h").unwrap().as_object().unwrap();
         assert_eq!(h.get("X-Debug").unwrap(), "1");
         assert_eq!(h.get("Authorization").unwrap(), "Bearer tok");
@@ -932,7 +996,7 @@ mod tests {
             r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
             &config,
         );
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed = yttp::parse(&result).unwrap();
         let obj = parsed.as_object().unwrap();
 
         assert_eq!(obj.get("post").unwrap(), "https://example.com");
@@ -947,7 +1011,7 @@ mod tests {
         );
         let config = Config::parse(&config_json);
         let result = expand_request(r#"{"g": "https://example.com/api"}"#, &config);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed = yttp::parse(&result).unwrap();
         let h = parsed.get("h").unwrap().as_object().unwrap();
         assert_eq!(h.get("X-From-Rule").unwrap(), "yes");
     }
@@ -993,18 +1057,60 @@ mod tests {
     }
 
     #[test]
+    fn expand_request_yaml_flow_format() {
+        let config = Config::empty();
+        let result = expand_request(r#"{"g": "https://example.com"}"#, &config);
+        // Should be YAML flow style, not JSON — no quoted keys
+        assert!(result.starts_with('{'));
+        assert!(result.contains("get:"));
+        assert!(!result.contains("\"get\""));
+    }
+
+    #[test]
+    fn to_yaml_flow_round_trip() {
+        let cases = vec![
+            r#"{"get": "http://localhost:3000/toys"}"#,
+            r#"{"post": "https://example.com", "h": {"Content-Type": "application/json"}, "b": {"name": "test"}}"#,
+            r#"{"get": "https://example.com/search?q=hello&limit=10"}"#,
+        ];
+        for json_str in cases {
+            let val: Value = serde_json::from_str(json_str).unwrap();
+            let yaml = to_yaml_flow(&val);
+            let reparsed = yttp::parse(&yaml).unwrap();
+            assert_eq!(val, reparsed, "Round-trip failed for: {yaml}");
+        }
+    }
+
+    #[test]
+    fn to_yaml_flow_quoting() {
+        // Reserved words must be quoted
+        assert_eq!(yaml_flow_scalar("true"), "\"true\"");
+        assert_eq!(yaml_flow_scalar("null"), "\"null\"");
+        // Numbers must be quoted
+        assert_eq!(yaml_flow_scalar("42"), "\"42\"");
+        // Empty string must be quoted
+        assert_eq!(yaml_flow_scalar(""), "\"\"");
+        // Plain strings stay unquoted
+        assert_eq!(yaml_flow_scalar("hello"), "hello");
+        assert_eq!(yaml_flow_scalar("http://example.com"), "http://example.com");
+        assert_eq!(yaml_flow_scalar("application/json"), "application/json");
+        // Flow indicators require quoting
+        assert_eq!(yaml_flow_scalar("a,b"), "\"a,b\"");
+        assert_eq!(yaml_flow_scalar("{x}"), "\"{x}\"");
+    }
+
+    #[test]
     fn expand_request_query_params() {
         let config = Config::empty();
         let result = expand_request(
             r#"{"g": "https://example.com/search", "q": {"term": "foo", "limit": 10}}"#,
             &config,
         );
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed = yttp::parse(&result).unwrap();
         let url = parsed.get("get").unwrap().as_str().unwrap();
         assert!(url.contains("term=foo"));
         assert!(url.contains("limit=10"));
         assert!(url.contains("?"));
-        // q: should not appear in the expanded output — it's merged into the URL
         assert!(parsed.get("q").is_none());
     }
 }
