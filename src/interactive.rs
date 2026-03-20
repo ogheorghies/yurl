@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::Config;
-use crate::expand_request;
+use crate::{expand_request, expand_request_structured};
 
 struct YurlHelper {
     step_mode: bool,
@@ -88,7 +88,8 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
     };
     format!("\n\
   {{request}}   send a JSON/YAML request\n\
-  {x}  {{req}}   expand request with config, review before sending\n\
+  {x}  {{req}}   expand request (wire-ready: query in URL)\n\
+  {xx} {{req}}   expand request (structured: q: and b: as objects)\n\
   {c}          show current config\n\
   {c}  {{cfg}}   replace active config\n\
 {step_cmds}\
@@ -96,10 +97,64 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
   {ctrl_d}      exit\n\
 {history_line}",
         x = style(".x").bold(),
+        xx = style(".xx").bold(),
         c = style(".c").bold(),
         help = style(".help").bold(), hdot = style(".h").dim(),
         ctrl_d = style("Ctrl-D").bold(),
     )
+}
+
+/// Prompt with pre-filled text, let user edit, then execute. Returns false on fatal error.
+fn prompt_and_send<F>(
+    rl: &mut Editor<YurlHelper, rustyline::history::DefaultHistory>,
+    initial: &str,
+    on_request: &mut F,
+) -> bool
+where
+    F: FnMut(String),
+{
+    match rl.readline_with_initial(PROMPT, (initial, "")) {
+        Ok(edited) => {
+            let edited = edited.trim().to_string();
+            if !edited.is_empty() {
+                rl.add_history_entry(&edited).ok();
+                on_request(edited);
+            }
+            true
+        }
+        Err(rustyline::error::ReadlineError::Interrupted) => {
+            eprintln!("  (skipped)");
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Try to strip a `.x` or `.xx` prefix from the input, expand, and re-prompt.
+/// Returns None if no expand prefix was found (caller should handle as normal input).
+/// Returns Some(true) to continue the loop, Some(false) to break.
+fn try_expand_and_send<F>(
+    input: &str,
+    rl: &mut Editor<YurlHelper, rustyline::history::DefaultHistory>,
+    config: &Arc<ArcSwap<Config>>,
+    on_request: &mut F,
+) -> Option<bool>
+where
+    F: FnMut(String),
+{
+    // .xx must be checked before .x since .xx starts with .x
+    let expanded = if let Some(req) = input.strip_prefix(".xx ") {
+        let req = req.trim();
+        if req.is_empty() { return Some(true); }
+        expand_request_structured(req, &config.load())
+    } else if let Some(req) = input.strip_prefix(".x ") {
+        let req = req.trim();
+        if req.is_empty() { return Some(true); }
+        expand_request(req, &config.load())
+    } else {
+        return None;
+    };
+    Some(prompt_and_send(rl, &expanded, on_request))
 }
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
@@ -153,28 +208,11 @@ where
                     if let Some(req) = queue.pop_front() {
                         match rl.readline_with_initial(PROMPT, (&req, "")) {
                             Ok(edited) => {
-                                let mut edited = edited.trim().to_string();
+                                let edited = edited.trim().to_string();
                                 if edited.is_empty() {
                                     // skip
-                                } else if let Some(req) = edited.strip_prefix(".x ") {
-                                    // User prepended .x — expand and re-prompt
-                                    let req = req.trim();
-                                    if !req.is_empty() {
-                                        edited = expand_request(req, &config.load());
-                                        match rl.readline_with_initial(PROMPT, (&edited, "")) {
-                                            Ok(final_edit) => {
-                                                let final_edit = final_edit.trim().to_string();
-                                                if !final_edit.is_empty() {
-                                                    rl.add_history_entry(&final_edit).ok();
-                                                    on_request(final_edit);
-                                                }
-                                            }
-                                            Err(rustyline::error::ReadlineError::Interrupted) => {
-                                                eprintln!("  (skipped)");
-                                            }
-                                            Err(_) => break,
-                                        }
-                                    }
+                                } else if let Some(ok) = try_expand_and_send(&edited, &mut rl, config, &mut on_request) {
+                                    if !ok { break; }
                                 } else {
                                     rl.add_history_entry(&edited).ok();
                                     on_request(edited);
@@ -217,27 +255,9 @@ where
                     continue;
                 }
 
-                // Handle .x command — expand request with config
-                if let Some(req) = trimmed.strip_prefix(".x ") {
-                    let req = req.trim();
-                    if req.is_empty() {
-                        eprintln!("  usage: .x {{request}}");
-                        continue;
-                    }
-                    let expanded = expand_request(req, &config.load());
-                    match rl.readline_with_initial(PROMPT, (&expanded, "")) {
-                        Ok(edited) => {
-                            let edited = edited.trim().to_string();
-                            if !edited.is_empty() {
-                                rl.add_history_entry(&edited).ok();
-                                on_request(edited);
-                            }
-                        }
-                        Err(rustyline::error::ReadlineError::Interrupted) => {
-                            eprintln!("  (skipped)");
-                        }
-                        Err(_) => break,
-                    }
+                // Handle .xx / .x commands — expand request with config
+                if let Some(ok) = try_expand_and_send(trimmed, &mut rl, config, &mut on_request) {
+                    if !ok { break; }
                     continue;
                 }
 

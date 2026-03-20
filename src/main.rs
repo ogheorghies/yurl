@@ -110,10 +110,17 @@ fn parse_input(s: &str) -> Value {
     yttp::parse(s).unwrap()
 }
 
-/// Expand a request line with full config resolution: API aliases, header
-/// shortcuts, env vars, rule matching, header merging. Returns the resolved
-/// request as a JSON string suitable for re-editing and execution.
-pub fn expand_request(line: &str, config: &Config) -> String {
+/// Parse a request line with config resolution, returning the resolved parts.
+/// Shared logic for both `expand_request` and `expand_request_structured`.
+fn resolve_request<'a>(line: &str, config: &'a Config) -> (
+    &'a str,                       // method
+    String,                        // url (with API alias expanded)
+    Option<Value>,                 // query
+    Map<String, Value>,            // merged headers
+    Option<Value>,                 // body
+    Option<Value>,                 // md
+    Vec<(String, String)>,         // outputs
+) {
     let json = parse_input(line);
     let obj = json.as_object().unwrap();
 
@@ -143,12 +150,71 @@ pub fn expand_request(line: &str, config: &Config) -> String {
     }
 
     let method = method.unwrap_or("GET");
-    let mut url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
-    yttp::append_query_to_url(&mut url, &query).ok();
+    let url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
+    // Resolve headers against full URL (before stripping query) for rule matching
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
+
+    (method, url, query, merged_headers, body, md, outputs)
+}
+
+/// Expand a request line with full config resolution: API aliases, header
+/// shortcuts, env vars, rule matching, header merging. Returns the resolved
+/// request as a YAML flow string with query params inlined in the URL.
+pub fn expand_request(line: &str, config: &Config) -> String {
+    let (method, mut url, query, merged_headers, body, md, outputs) =
+        resolve_request(line, config);
+
+    yttp::append_query_to_url(&mut url, &query).ok();
 
     let mut result = Map::new();
     result.insert(method.to_lowercase(), Value::String(url));
+    if !merged_headers.is_empty() {
+        result.insert("h".to_string(), Value::Object(merged_headers));
+    }
+    if let Some(b) = body {
+        result.insert("b".to_string(), b);
+    }
+    if let Some(m) = md {
+        result.insert("md".to_string(), m);
+    }
+    for (k, v) in outputs {
+        result.insert(k, Value::String(v));
+    }
+    to_yaml_flow(&Value::Object(result))
+}
+
+/// Expand a request with full config resolution, keeping query params and body
+/// in structured form. URL query string is extracted into `q:`, body is kept
+/// as a structured object when Content-Type implies structure (JSON, form, multipart).
+pub fn expand_request_structured(line: &str, config: &Config) -> String {
+    let (method, url, query, merged_headers, body, md, outputs) =
+        resolve_request(line, config);
+
+    // Split URL into base (without query string) and extract query params
+    let mut query_obj = Map::new();
+    let base_url = if let Ok(parsed) = Url::parse(&url) {
+        for (k, v) in parsed.query_pairs() {
+            query_obj.insert(k.into_owned(), Value::String(v.into_owned()));
+        }
+        let mut base = parsed.clone();
+        base.set_query(None);
+        base.to_string()
+    } else {
+        url
+    };
+
+    // Merge query params from q: field
+    if let Some(Value::Object(q)) = query {
+        for (k, v) in q {
+            query_obj.insert(k, v);
+        }
+    }
+
+    let mut result = Map::new();
+    result.insert(method.to_lowercase(), Value::String(base_url));
+    if !query_obj.is_empty() {
+        result.insert("q".to_string(), Value::Object(query_obj));
+    }
     if !merged_headers.is_empty() {
         result.insert("h".to_string(), Value::Object(merged_headers));
     }
@@ -1112,5 +1178,79 @@ mod tests {
         assert!(url.contains("limit=10"));
         assert!(url.contains("?"));
         assert!(parsed.get("q").is_none());
+    }
+
+    #[test]
+    fn structured_extracts_query_from_url() {
+        let config = Config::empty();
+        let result = expand_request_structured(
+            r#"{"g": "https://example.com/search?a=1&b=2"}"#,
+            &config,
+        );
+        let parsed = yttp::parse(&result).unwrap();
+        let url = parsed.get("get").unwrap().as_str().unwrap();
+        assert!(!url.contains('?'), "URL should have no query string: {url}");
+        assert_eq!(url, "https://example.com/search");
+        let q = parsed.get("q").unwrap().as_object().unwrap();
+        assert_eq!(q.get("a").unwrap(), "1");
+        assert_eq!(q.get("b").unwrap(), "2");
+    }
+
+    #[test]
+    fn structured_merges_url_and_q_params() {
+        let config = Config::empty();
+        let result = expand_request_structured(
+            r#"{"g": "https://example.com/search?a=1", "q": {"b": 2}}"#,
+            &config,
+        );
+        let parsed = yttp::parse(&result).unwrap();
+        let url = parsed.get("get").unwrap().as_str().unwrap();
+        assert_eq!(url, "https://example.com/search");
+        let q = parsed.get("q").unwrap().as_object().unwrap();
+        assert_eq!(q.get("a").unwrap(), "1");
+        assert_eq!(q.get("b").unwrap().as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn structured_no_query_no_q_key() {
+        let config = Config::empty();
+        let result = expand_request_structured(
+            r#"{"g": "https://example.com/path"}"#,
+            &config,
+        );
+        let parsed = yttp::parse(&result).unwrap();
+        assert!(parsed.get("q").is_none());
+    }
+
+    #[test]
+    fn structured_preserves_body_and_outputs() {
+        let config = Config::empty();
+        let result = expand_request_structured(
+            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s,b)"}"#,
+            &config,
+        );
+        let parsed = yttp::parse(&result).unwrap();
+        assert_eq!(
+            parsed.get("b").unwrap().as_object().unwrap().get("name").unwrap(),
+            "test"
+        );
+        assert_eq!(parsed.get("1").unwrap(), "j(s,b)");
+    }
+
+    #[test]
+    fn structured_round_trip() {
+        // Output of .xx should be valid yurl input
+        let config = Config::empty();
+        let result = expand_request_structured(
+            r#"{"g": "https://example.com/search?term=foo", "q": {"limit": 10}, "h": {"X-Test": "1"}}"#,
+            &config,
+        );
+        // Should parse without error
+        let parsed = yttp::parse(&result).unwrap();
+        assert!(parsed.is_object());
+        // Can be fed back into expand_request_structured
+        let result2 = expand_request_structured(&result, &config);
+        let parsed2 = yttp::parse(&result2).unwrap();
+        assert_eq!(parsed, parsed2, "Should be idempotent");
     }
 }
