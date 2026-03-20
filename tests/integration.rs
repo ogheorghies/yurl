@@ -778,3 +778,13 @@ fn raw_status_atom_has_output() {
     let out = jurl(&input);
     assert!(out.contains("200"), "raw status should contain 200: {out}");
 }
+
+#[test]
+fn unclosed_format_prints_error() {
+    let b = base();
+    // y(s! is an unclosed format — should error, not panic
+    let input = format!(r#"{{"g": "{b}/get", "1": "y(s!"}}"#);
+    let output = jurl_full(&input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unclosed format"), "should show unclosed format error: {stderr}");
+}
