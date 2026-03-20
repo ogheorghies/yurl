@@ -1,9 +1,9 @@
 # yurl
 
-HTTP client — [batch](#request), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
-Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#reference) JSON/YAML facade.
+HTTP client — [batch](#batch-config), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
+Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#yttp--request-and-response) JSON/YAML facade.
 
-[Reference](#reference) · [Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
+[Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
 
 Install: `cargo install yurl`
 
@@ -17,6 +17,84 @@ h:
 b:
   id: 1
   title: sunt aut facere...
+```
+
+Batch with API aliases, auth from env, JSON output:
+
+```bash
+echo '
+{g: api!/get}
+{p: api!/post, b: {name: Owl, price: 5.99}}
+' | yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s,b)"}'
+```
+
+## Reference
+
+### yttp — request and response
+
+[Full spec](https://github.com/ogheorghies/yttp#reference) — method shortcuts, header shortcuts, auth, body encoding, response formatting.
+
+```yaml
+# request
+g: https://example.com                # method shortcuts: g p d, or full names
+h: {a!: my-token, c!: j!}             # header key/value shortcuts expand in place
+b: {city: Berlin}                     # body encoding follows Content-Type
+
+# response — default output: y(s!,h,b)
+s: {v: HTTP/1.1, c: 200, t: OK}       # s! -> status inline object
+h: {content-type: application/json}   # response headers
+b: {city: Berlin, lang: de}           # JSON -> structured, UTF-8 -> string, binary -> base64
+```
+
+### yurl extensions
+
+```yaml
+# metadata
+md: {env: prod, batch: 7}            # available in output and file path templates
+
+# output destinations
+1: j(s!,h,b)                          # stdout (jurl default)
+1: y(s!,h,b)                          # stdout (yurl default)
+2: s                                  # stderr
+file://response.raw: b                # file
+file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # templated path, auto-streamed
+file://large.bin?stream: b            # explicit streaming
+
+# atoms
+# response:  b    h    s!   s    s.c  s.t  s.v  (or s.code s.text s.version)
+#     or:    o.b  o.h  ...
+# request:   i.b  i.h  i.s
+# URL:       u.scheme  u.host  u.port  u.path  u.query  u.fragment
+# other:     m    u    idx  md  md.*
+```
+
+### Batch config
+
+```yaml
+api: https://api.example.com/v1       # string or {name: url, ...}
+
+h:                                    # default headers
+  a!: bearer!$TOKEN
+  User-Agent: yurl/0.1
+
+1: j(idx, s.code)                     # default output
+
+concurrency: 10                       # global max (default: 1)
+progress: true                        # spinner or N for progress bar
+
+rules:
+  - match: {u: "**slow-api**"}
+    concurrency: 2
+  - match: {m: POST}
+    h: {c!: f!}
+  - match: {md.env: prod}
+    h: {X-Debug: "false"}
+  - match: {u: "**api.openai.com**"}
+    cache: true                       # {ttl: 0, keys: [m,u,b], at: default}
+  - match: {u: "**api.example.com**"}
+    cache: {ttl: 3600, keys: [u, b, a], at: ./.cache}
+
+# merge order: config -> rules (in order) -> per-request
 ```
 
 ## Request
@@ -159,7 +237,7 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s,b)"}'
 
-yurl v0.5.0
+yurl v0.6.1
 
 > .c
   config: api: api | h: 1 header | output: 1
@@ -188,70 +266,3 @@ yurl v0.5.0
 | `.x {req}` | expand with config, review before sending |
 | `.c` | show config; `.c {cfg}` to replace |
 | `.help` / `.h` | show help |
-
-## Reference
-
-### yttp — request and response ([spec](https://github.com/ogheorghies/yttp#reference))
-
-```yaml
-# request
-g: https://example.com                # method shortcuts: g p d, or full names
-h: {a!: my-token, c!: j!}             # header key/value shortcuts expand in place
-b: {city: Berlin}                     # body encoding follows Content-Type
-
-# response — default output: y(s!,h,b)
-s: {v: HTTP/1.1, c: 200, t: OK}       # s! -> status inline object
-h: {content-type: application/json}   # response headers
-b: {city: Berlin, lang: de}           # JSON -> structured, UTF-8 -> string, binary -> base64
-```
-
-### yurl extensions
-
-```yaml
-# metadata
-md: {env: prod, batch: 7}            # available in output and file path templates
-
-# output destinations
-1: j(s!,h,b)                          # stdout (jurl default)
-1: y(s!,h,b)                          # stdout (yurl default)
-2: s                                  # stderr
-file://response.raw: b                # file
-file://{{md.env}}/{{idx}}.json: j(s!,h,b)  # templated path, auto-streamed
-file://large.bin?stream: b            # explicit streaming
-
-# atoms
-# response:  b    h    s!   s    s.c  s.t  s.v  (or s.code s.text s.version)
-#     or:    o.b  o.h  ...
-# request:   i.b  i.h  i.s
-# URL:       u.scheme  u.host  u.port  u.path  u.query  u.fragment
-# other:     m    u    idx  md  md.*
-```
-
-### Batch config
-
-```yaml
-api: https://api.example.com/v1       # string or {name: url, ...}
-
-h:                                    # default headers
-  a!: bearer!my-token
-  User-Agent: jurl/0.1
-
-1: j(idx, s.code)                     # default output
-
-concurrency: 10                       # global max (default: 1)
-progress: true                        # spinner or N for progress bar
-
-rules:
-  - match: {u: "**slow-api**"}
-    concurrency: 2
-  - match: {m: POST}
-    h: {c!: f!}
-  - match: {md.env: prod}
-    h: {X-Debug: "false"}
-  - match: {u: "**api.openai.com**"}
-    cache: true                       # {ttl: 0, keys: [m,u,b], at: default}
-  - match: {u: "**api.example.com**"}
-    cache: {ttl: 3600, keys: [u, b, a], at: ./.cache}
-
-# merge order: config -> rules (in order) -> per-request
-```
