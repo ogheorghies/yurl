@@ -671,7 +671,8 @@ fn flush_output_locked(
     stdout_lock: &Mutex<()>,
     stderr_lock: &Mutex<()>,
     stderr_suppressed: Option<&AtomicUsize>,
-) {
+) -> bool {
+    let stdout_ends_newline = buf.stdout.last() == Some(&b'\n');
     if !buf.stdout.is_empty() {
         let _lock = stdout_lock.lock().unwrap();
         io::stdout().write_all(&buf.stdout).unwrap();
@@ -691,6 +692,7 @@ fn flush_output_locked(
         let mut f = fs::File::create(path).unwrap();
         f.write_all(data).unwrap();
     }
+    stdout_ends_newline || buf.stdout.is_empty()
 }
 
 fn pre_parse_for_matching(line: &str, apis: &std::collections::HashMap<String, String>) -> Result<(String, String, Option<Value>), RequestError> {
@@ -938,15 +940,20 @@ async fn main() {
                     return;
                 }
             };
-            flush_output_locked(
+            let ends_newline = flush_output_locked(
                 buf,
                 &stdout_lock,
                 &stderr_lock,
                 stderr_suppressed.as_deref(),
             );
 
-            // Flush stdout in interactive mode
+            // In interactive mode, ensure output ends with newline so
+            // the spinner/prompt don't overwrite the last line of output.
             if io::stdout().is_terminal() {
+                if !ends_newline {
+                    let _lock = stdout_lock.lock().unwrap();
+                    let _ = io::stdout().write_all(b"\n");
+                }
                 let _ = io::stdout().flush();
             }
 

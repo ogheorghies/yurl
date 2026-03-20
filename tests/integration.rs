@@ -770,3 +770,11 @@ fn invalid_config_exits_with_error() {
     let output = jurl_full(r#"{"g": "http://example.com"}"#, Some("{broken"));
     assert!(!output.status.success(), "should exit with error code");
 }
+
+#[test]
+fn raw_status_atom_has_output() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "1": "s"}}"#);
+    let out = jurl(&input);
+    assert!(out.contains("200"), "raw status should contain 200: {out}");
+}
