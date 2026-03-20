@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2024"
 license = "MIT"
 description = "HTTP client — batch, interactive, concurrent, streaming, output routing, caching"
@@ -24,7 +24,7 @@ serde_yml = "0.0.12"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 url = "2"
-yttp = "0.0.1"
+yttp = "0.0.4"
 
 [[bin]]
 name = "jurl"

@@ -85,12 +85,28 @@ async fn echo_handler(
         headers_obj.insert(capitalized, Value::String(v));
     }
 
-    // Reconstruct full URL (tests compare against it)
+    // Reconstruct full URL including query string (tests compare against it)
     let host = headers
         .get("host")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("localhost");
-    let full_url = format!("http://{host}{}", uri.path());
+    let full_url = if let Some(q) = uri.query() {
+        format!("http://{host}{}?{q}", uri.path())
+    } else {
+        format!("http://{host}{}", uri.path())
+    };
+
+    // Parse query string into args
+    let mut args = Map::new();
+    if let Some(q) = uri.query() {
+        for pair in q.split('&') {
+            if let Some((k, v)) = pair.split_once('=') {
+                let k = urldecode(k);
+                let v = urldecode(v);
+                args.insert(k, Value::String(v));
+            }
+        }
+    }
 
     let content_type = headers
         .get("content-type")
@@ -140,7 +156,7 @@ async fn echo_handler(
         "headers": headers_obj,
         "json": json_body,
         "form": form_body,
-        "args": {},
+        "args": args,
         "method": method.as_str(),
         "origin": "127.0.0.1"
     }))

@@ -122,6 +122,7 @@ pub fn expand_request(line: &str, config: &Config) -> String {
     let mut req_headers = None;
     let mut body = None;
     let mut md = None;
+    let mut query = None;
     let mut outputs: Vec<(String, String)> = Vec::new();
 
     for (key, val) in obj {
@@ -135,13 +136,15 @@ pub fn expand_request(line: &str, config: &Config) -> String {
                 "h" | "headers" => req_headers = Some(val.clone()),
                 "b" | "body" => body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
+                "q" | "query" => query = Some(val.clone()),
                 _ => {}
             }
         }
     }
 
     let method = method.unwrap_or("GET");
-    let url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
+    let mut url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
+    yttp::append_query_to_url(&mut url, &query).ok();
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 
     let mut result = Map::new();
@@ -170,6 +173,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     let mut req_headers = None;
     let mut req_body = None;
     let mut md = None;
+    let mut query = None;
     let mut outputs: Vec<(Dest, Format)> = Vec::new();
 
     for (key, val) in obj {
@@ -185,6 +189,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
                 "h" | "headers" => req_headers = Some(val.clone()),
                 "b" | "body" => req_body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
+                "q" | "query" => query = Some(val.clone()),
                 _ => eprintln!("unknown key: {key}"),
             }
         }
@@ -212,7 +217,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     }
 
     let method = method.expect("no HTTP method found");
-    let url = config::expand_api_url(&url.expect("no URL found"), &config.apis);
+    let mut url = config::expand_api_url(&url.expect("no URL found"), &config.apis);
+    yttp::append_query_to_url(&mut url, &query).ok();
 
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 
@@ -984,5 +990,21 @@ mod tests {
         assert!(result.contains("example.com:8080"));
         assert!(result.contains("X-New"));
         assert!(!result.contains("X-Old"));
+    }
+
+    #[test]
+    fn expand_request_query_params() {
+        let config = Config::empty();
+        let result = expand_request(
+            r#"{"g": "https://example.com/search", "q": {"term": "foo", "limit": 10}}"#,
+            &config,
+        );
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let url = parsed.get("get").unwrap().as_str().unwrap();
+        assert!(url.contains("term=foo"));
+        assert!(url.contains("limit=10"));
+        assert!(url.contains("?"));
+        // q: should not appear in the expanded output — it's merged into the URL
+        assert!(parsed.get("q").is_none());
     }
 }

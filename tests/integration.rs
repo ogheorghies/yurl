@@ -680,3 +680,46 @@ fn env_var_unset_passes_through() {
     // Unset var should pass through as literal $YURL_NONEXISTENT_VAR
     assert_eq!(body["headers"]["X-Test"], "$YURL_NONEXISTENT_VAR");
 }
+
+// --- query params ---
+
+#[test]
+fn query_params_basic() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "q": {{"term": "foo", "limit": 10}}, "1": "b"}}"#);
+    let out = jurl(&input);
+    let body = parse_json(&out);
+    assert_eq!(body["args"]["term"], "foo");
+    assert_eq!(body["args"]["limit"], "10");
+    assert!(body["url"].as_str().unwrap().contains("?"));
+}
+
+#[test]
+fn query_params_merge_with_url() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get?x=1", "q": {{"y": "2"}}, "1": "b"}}"#);
+    let out = jurl(&input);
+    let body = parse_json(&out);
+    let url = body["url"].as_str().unwrap();
+    assert!(url.contains("x=1"));
+    assert!(url.contains("y=2"));
+}
+
+#[test]
+fn query_params_url_encoding() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "q": {{"q": "hello world"}}, "1": "b"}}"#);
+    let out = jurl(&input);
+    let body = parse_json(&out);
+    assert_eq!(body["args"]["q"], "hello world");
+}
+
+#[test]
+fn query_params_absent_noop() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "1": "b"}}"#);
+    let out = jurl(&input);
+    let body = parse_json(&out);
+    let url = body["url"].as_str().unwrap();
+    assert!(!url.contains("?"));
+}
