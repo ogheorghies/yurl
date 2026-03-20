@@ -343,12 +343,13 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
             );
         } else if config::is_output_key(key) {
             let dest = parse_dest(key);
-            let fmt = parse_format(
-                val.as_str()
-                    .ok_or_else(|| RequestError::Structure {
-                        msg: format!("output key '{key}' must have a string value"),
-                    })?,
-            );
+            let fmt_str = val.as_str()
+                .ok_or_else(|| RequestError::Structure {
+                    msg: format!("output key '{key}' must have a string value"),
+                })?;
+            let fmt = parse_format(fmt_str).map_err(|e| RequestError::Structure {
+                msg: e,
+            })?;
             outputs.push((dest, fmt));
         } else {
             match key.to_lowercase().as_str() {
@@ -372,7 +373,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
             outputs.push((Dest::Stdout, default_fmt));
         } else {
             for (key, fmt_str) in &config.default_outputs {
-                outputs.push((parse_dest(key), parse_format(fmt_str)));
+                let fmt = parse_format(fmt_str).map_err(|e| RequestError::Structure { msg: e })?;
+                outputs.push((parse_dest(key), fmt));
             }
         }
     }
@@ -1039,7 +1041,9 @@ async fn main() {
                 concurrent,
                 yaml_mode,
             );
-            handle.await.unwrap();
+            if let Err(e) = handle.await {
+                eprintln!("  request failed: {e}");
+            }
             spinner.finish_and_clear();
             eprint!("\x1b[?25h"); // restore cursor
             // Signal REPL to show next prompt
@@ -1093,7 +1097,9 @@ async fn main() {
 
         // Wait for all in-flight tasks to complete
         for handle in handles {
-            handle.await.unwrap();
+            if let Err(e) = handle.await {
+                eprintln!("request failed: {e}");
+            }
         }
         reader_handle.join().ok();
     }
