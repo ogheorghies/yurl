@@ -131,7 +131,13 @@ where
                     // Prefill is consumed by the driver state — the next loop
                     // iteration will use pending_prefill() to show it
                 }
-                Effect::Print(msg) => eprint!("{msg}"),
+                Effect::Print(msg) => {
+                    if msg.ends_with('\n') {
+                        eprint!("{msg}");
+                    } else {
+                        eprintln!("{msg}");
+                    }
+                }
                 Effect::AddHistory(entry) => { rl.add_history_entry(&entry).ok(); }
                 Effect::Exit => {
                     if let Some(ref path) = history_path {
