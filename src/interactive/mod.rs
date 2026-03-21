@@ -104,22 +104,8 @@ where
 
     #[cfg(debug_assertions)]
     let exe_mtime_at_start = exe_mtime();
-    #[cfg(debug_assertions)]
-    let mut stale_warned = false;
 
     loop {
-        #[cfg(debug_assertions)]
-        if !stale_warned {
-            if let Some(start) = exe_mtime_at_start {
-                if let Some(current) = exe_mtime() {
-                    if current > start {
-                        eprintln!("  {} binary has been rebuilt — restart for latest changes",
-                            style("warning:").yellow().bold());
-                        stale_warned = true;
-                    }
-                }
-            }
-        }
         // Determine prompt: if driver has a prefill, use readline_with_initial
         let prompt_str = if driver.in_yaml_mode() { CONTINUATION } else { PROMPT };
 
@@ -161,6 +147,16 @@ where
                         let _ = rl.save_history(path);
                     }
                     return;
+                }
+            }
+        }
+
+        #[cfg(debug_assertions)]
+        if let Some(start) = exe_mtime_at_start {
+            if let Some(current) = exe_mtime() {
+                if current > start {
+                    eprintln!("  {} binary has been rebuilt — restart for latest changes",
+                        style("warning:").yellow().bold());
                 }
             }
         }
