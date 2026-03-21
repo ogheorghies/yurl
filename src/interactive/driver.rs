@@ -82,7 +82,9 @@ impl Driver {
         match input {
             Input::CtrlD => vec![Effect::Exit],
             Input::CtrlC => {
-                vec![Effect::Print("  (press Ctrl-D to exit)".to_string())]
+                // Clear any pending prefill (e.g. from .x expansion)
+                self.prefill = None;
+                vec![]
             }
             Input::Up => self.handle_up(),
             Input::Down => self.handle_down(),
@@ -605,10 +607,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_prints_hint() {
+    fn ctrl_c_clears_line() {
         let mut d = empty_driver();
+        // Set up a prefill (as if .x just expanded)
+        d.prefill = Some("{get: https://example.com}".into());
         let effects = d.handle_input(Input::CtrlC);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("Ctrl-D"))));
+        assert!(effects.is_empty());
+        assert!(d.prefill.is_none(), "prefill should be cleared");
     }
 
     #[test]
