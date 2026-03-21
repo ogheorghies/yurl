@@ -266,11 +266,28 @@ fn to_yaml_flow(val: &Value) -> String {
         Value::Object(map) => {
             let pairs: Vec<String> = map
                 .iter()
-                .map(|(k, v)| format!("{}: {}", yaml_flow_scalar(k), to_yaml_flow(v)))
+                .map(|(k, v)| format!("{}: {}", yaml_flow_key(k), to_yaml_flow(v)))
                 .collect();
             format!("{{{}}}", pairs.join(", "))
         }
     }
+}
+
+/// Quote a YAML flow key. Numbers are left unquoted since they're valid as keys.
+fn yaml_flow_key(s: &str) -> String {
+    if s.is_empty() || needs_yaml_key_quoting(s) {
+        yaml_flow_scalar(s)
+    } else {
+        s.to_string()
+    }
+}
+
+fn needs_yaml_key_quoting(s: &str) -> bool {
+    // Numbers are fine as keys — {1: val} is valid YAML
+    if s.parse::<f64>().is_ok() {
+        return false;
+    }
+    needs_yaml_quoting(s)
 }
 
 fn yaml_flow_scalar(s: &str) -> String {
@@ -1246,6 +1263,32 @@ mod tests {
         // Flow indicators require quoting
         assert_eq!(yaml_flow_scalar("a,b"), "\"a,b\"");
         assert_eq!(yaml_flow_scalar("{x}"), "\"{x}\"");
+    }
+
+    #[test]
+    fn yaml_flow_key_unquoted_numbers() {
+        // Numeric keys should not be quoted
+        assert_eq!(yaml_flow_key("1"), "1");
+        assert_eq!(yaml_flow_key("2"), "2");
+        // Non-numeric keys follow normal rules
+        assert_eq!(yaml_flow_key("get"), "get");
+        assert_eq!(yaml_flow_key("true"), "\"true\"");
+        assert_eq!(yaml_flow_key(""), "\"\"");
+    }
+
+    #[test]
+    fn expand_request_numeric_key_unquoted() {
+        let config = Config::empty();
+        let result = expand_request(
+            r#"{"g": "https://example.com", "1": "j(s b)"}"#,
+            &config,
+        ).unwrap();
+        // Output key 1 should not be quoted
+        assert!(result.contains("1: "), "numeric key should be unquoted: {result}");
+        assert!(!result.contains("\"1\""), "numeric key should not be quoted: {result}");
+        // Should still round-trip
+        let parsed = yttp::parse(&result).unwrap();
+        assert_eq!(parsed.get("1").unwrap(), "j(s b)");
     }
 
     #[test]
