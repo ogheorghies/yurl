@@ -162,7 +162,7 @@ Default: `y(s! h b)` for yurl, `j(s! h b)` for jurl (same binary, JSON output). 
 | `b` / `o.b` | response body (raw outside `j()`/`y()`, smart-encoded inside) |
 | `h` / `o.h` | response headers |
 | `s` / `o.s` | status line; `s.code`, `s.text`, `s.version` for parts |
-| `i.b`, `i.h` | request echo (input body, headers) |
+| `i.b`, `i.h` | request body, headers |
 | `m` | request method |
 | `u` | full URL; `u.scheme`, `u.host`, `u.port`, `u.path`, `u.query`, `u.fragment` |
 | `idx` | auto-incrementing request index (0-based) |
