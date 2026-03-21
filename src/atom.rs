@@ -12,7 +12,6 @@ pub enum Atom {
     UScheme, UHost, UPort, UPath, UQuery, UFragment, // u.* URL parts
     Ib,     // i.b — request (input) body
     Ih,     // i.h — request (input) headers
-    Is,     // i.s — request (input) status
     SCode,  // o.s.code / s.code
     SText,  // o.s.text / s.text
     SVersion, // o.s.version / s.version
@@ -54,7 +53,6 @@ pub struct RequestData {
     pub method: String,
     pub url: String,
     pub url_parts: UrlParts,
-    pub status_line: String,
     pub headers_raw: String,
     pub headers_json: Map<String, Value>,
     pub body_json: Option<Value>,
@@ -81,7 +79,6 @@ pub fn parse_atom(s: &str) -> Option<Atom> {
         "u.fragment" => Some(Atom::UFragment),
         "i.b" => Some(Atom::Ib),
         "i.h" => Some(Atom::Ih),
-        "i.s" => Some(Atom::Is),
         "idx" => Some(Atom::Idx),
         "md" => Some(Atom::Md),
         _ if s.starts_with("md.") => Some(Atom::MdField(s[3..].to_string())),
@@ -153,7 +150,6 @@ fn atom_raw<'a>(atom: &Atom, resp: &'a ResponseData, req: &'a RequestData) -> Co
             .map(|v| Cow::Owned(serde_json::to_string(v).unwrap().into_bytes()))
             .unwrap_or(Cow::Borrowed(b"")),
         Atom::Ih => Cow::Borrowed(req.headers_raw.as_bytes()),
-        Atom::Is => Cow::Borrowed(req.status_line.as_bytes()),
         Atom::Idx => Cow::Owned(req.idx.to_string().into_bytes()),
         Atom::Md => Cow::Owned(md_to_string(&req.md).into_bytes()),
         Atom::MdField(field) => Cow::Owned(md_field_to_string(&req.md, field).into_bytes()),
@@ -189,7 +185,6 @@ pub fn atom_json_value(atom: &Atom, resp: &ResponseData, req: &RequestData) -> V
             .clone()
             .unwrap_or(Value::Null),
         Atom::Ih => Value::Object(req.headers_json.clone()),
-        Atom::Is => Value::String(req.status_line.clone()),
         Atom::Idx => Value::Number(req.idx.into()),
         Atom::Md => req.md.clone().unwrap_or(Value::Null),
         Atom::MdField(field) => req
@@ -248,7 +243,6 @@ fn build_value_map(atoms: &[Atom], resp: &ResponseData, req: &RequestData) -> Va
                     Atom::U => "u",
                     Atom::Ib => "i.b",
                     Atom::Ih => "i.h",
-                    Atom::Is => "i.s",
                     Atom::Idx => "idx",
                     Atom::Md => "md",
                     _ => unreachable!(),

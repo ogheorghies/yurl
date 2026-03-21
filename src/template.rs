@@ -14,7 +14,6 @@ fn resolve_var<'a>(key: &str, resp: &'a ResponseData, req: &'a RequestData) -> C
         "s.version" | "s.v" | "o.s.version" => Cow::Borrowed(&resp.status_parts.version),
         "m" => Cow::Borrowed(&req.method),
         "u" => Cow::Borrowed(&req.url),
-        "i.s" => Cow::Borrowed(&req.status_line),
         "i.h" => Cow::Borrowed(&req.headers_raw),
         "i.b" => req
             .body_json

@@ -89,7 +89,7 @@ pub fn reference_card() -> String {
 
   Response atoms  b → body    h → headers    s → status line    s → status object
                   s.c → code    s.t → text    s.v → version
-  Request atoms   i.b → body    i.h → headers    i.s → status    m → method
+  Request atoms   i.b → body    i.h → headers    m → method
   URL atoms       u → full     u.scheme  u.host  u.port  u.path  u.query  u.fragment
   Other           idx → request index    md → metadata    md.field  → metadata field
 

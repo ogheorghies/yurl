@@ -63,7 +63,7 @@ file://{{md.env}}/{{idx}}.json: j(s! h b)  # templated path, auto-streamed
 # atoms
 # response:  b    h    s!   s    s.c  s.t  s.v  (or s.code s.text s.version)
 #     or:    o.b  o.h  ...
-# request:   i.b  i.h  i.s
+# request:   i.b  i.h
 # URL:       u.scheme  u.host  u.port  u.path  u.query  u.fragment
 # other:     m    u    idx  md  md.*
 ```
@@ -162,7 +162,7 @@ Default: `y(s! h b)` for yurl, `j(s! h b)` for jurl (same binary, JSON output). 
 | `b` / `o.b` | response body (raw outside `j()`/`y()`, smart-encoded inside) |
 | `h` / `o.h` | response headers |
 | `s` / `o.s` | status line; `s.code`, `s.text`, `s.version` for parts |
-| `i.b`, `i.h`, `i.s` | request echo (input body, headers, status) |
+| `i.b`, `i.h` | request echo (input body, headers) |
 | `m` | request method |
 | `u` | full URL; `u.scheme`, `u.host`, `u.port`, `u.path`, `u.query`, `u.fragment` |
 | `idx` | auto-incrementing request index (0-based) |

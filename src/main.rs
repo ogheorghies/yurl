@@ -467,8 +467,6 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         }
     }
 
-    let req_status_line = format!("{method} {url}");
-
     let parsed = Url::parse(&url).map_err(|e| RequestError::Url {
         url: url.clone(),
         msg: e.to_string(),
@@ -486,7 +484,6 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         method: method.to_string(),
         url,
         url_parts,
-        status_line: req_status_line,
         headers_raw: req_headers_raw,
         headers_json: req_headers_json,
         body_json: req_body.clone(),
