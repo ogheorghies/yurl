@@ -788,3 +788,59 @@ fn unclosed_format_prints_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unclosed format"), "should show unclosed format error: {stderr}");
 }
+
+#[test]
+fn unknown_format_atom_prints_error() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "1": "j(bogus)"}}"#);
+    let output = jurl_full(&input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown atom"), "should show unknown atom error: {stderr}");
+}
+
+#[test]
+fn space_separated_format_atoms() {
+    let b = base();
+    // y(s h) should work with space-separated atoms
+    let input = format!(r#"{{"g": "{b}/get", "1": "j(s.code s.text)"}}"#);
+    let out = jurl(&input);
+    let json = parse_json(&out);
+    assert_eq!(json["s"]["c"], 200);
+    assert_eq!(json["s"]["t"], "OK");
+}
+
+#[test]
+fn yaml_flow_error_not_json_error() {
+    // YAML flow input with unquoted keys should get a YAML error, not JSON
+    let input = "{g: google.com, adad:}";
+    let output = jurl_full(input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("invalid JSON"), "should show YAML error for YAML input: {stderr}");
+    assert!(stderr.contains("invalid YAML") || stderr.contains("YAML"), "should mention YAML: {stderr}");
+}
+
+#[test]
+fn url_not_string_prints_error() {
+    let input = r#"{"g": {"nested": true}}"#;
+    let output = jurl_full(input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must be a string"), "should show type error: {stderr}");
+}
+
+#[test]
+fn error_in_batch_continues_processing() {
+    let b = base();
+    // Three requests: valid, invalid, valid
+    let input = format!(
+        r#"{{"g": "{b}/get", "1": "s"}}
+{{broken
+{{"g": "{b}/get", "1": "s"}}"#
+    );
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Both valid requests should produce output
+    assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed. stdout: {stdout}");
+    // Invalid request should produce error
+    assert!(stderr.contains("invalid") || stderr.contains("^"), "should show error for invalid request: {stderr}");
+}

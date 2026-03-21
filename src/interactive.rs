@@ -168,6 +168,7 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
 
 /// Prompt with pre-filled text, let user edit, then execute. Returns false on fatal error.
 /// If the user prepends `.x` or `.xx` to the edited text, expands and re-prompts.
+/// Does NOT record to history — callers are responsible for recording what the user typed.
 fn prompt_and_send<F>(
     rl: &mut Editor<YurlHelper, rustyline::history::DefaultHistory>,
     initial: &str,
@@ -187,7 +188,6 @@ where
             if let Some(ok) = try_expand_and_send(&edited, rl, config, on_request) {
                 return ok;
             }
-            rl.add_history_entry(&edited).ok();
             on_request(edited);
             true
         }
@@ -202,6 +202,9 @@ where
 /// Try to strip a `.x` or `.xx` prefix from the input, expand, and re-prompt.
 /// Returns None if no expand prefix was found (caller should handle as normal input).
 /// Returns Some(true) to continue the loop, Some(false) to break.
+///
+/// Records the original `.x`/`.xx` command to history so pressing up recalls
+/// the command, not the expanded result.
 ///
 /// On expand error, prints the colored error and re-prompts with the original
 /// input so the user can fix it.
@@ -226,6 +229,8 @@ where
     } else {
         return None;
     };
+    // Record the .x/.xx command to history, not the expanded result
+    rl.add_history_entry(input).ok();
     match result {
         Ok(expanded) => Some(prompt_and_send(rl, &expanded, config, on_request)),
         Err(e) => {
