@@ -395,6 +395,13 @@ where
                     continue;
                 }
 
+                // Unknown dot-command
+                if trimmed.starts_with('.') {
+                    let cmd = trimmed.split_whitespace().next().unwrap_or(trimmed);
+                    eprintln!("  unknown command: {cmd} (try .help)");
+                    continue;
+                }
+
                 // Single-line flow: starts with { → execute immediately
                 if trimmed.starts_with('{') {
                     rl.add_history_entry(&line).ok();
