@@ -167,9 +167,11 @@ fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
 }
 
 /// Prompt with pre-filled text, let user edit, then execute. Returns false on fatal error.
+/// If the user prepends `.x` or `.xx` to the edited text, expands and re-prompts.
 fn prompt_and_send<F>(
     rl: &mut Editor<YurlHelper, rustyline::history::DefaultHistory>,
     initial: &str,
+    config: &Arc<ArcSwap<Config>>,
     on_request: &mut F,
 ) -> bool
 where
@@ -178,10 +180,15 @@ where
     match rl.readline_with_initial(PROMPT, (initial, "")) {
         Ok(edited) => {
             let edited = edited.trim().to_string();
-            if !edited.is_empty() {
-                rl.add_history_entry(&edited).ok();
-                on_request(edited);
+            if edited.is_empty() {
+                return true;
             }
+            // Check if user prepended .x or .xx
+            if let Some(ok) = try_expand_and_send(&edited, rl, config, on_request) {
+                return ok;
+            }
+            rl.add_history_entry(&edited).ok();
+            on_request(edited);
             true
         }
         Err(rustyline::error::ReadlineError::Interrupted) => {
@@ -208,23 +215,23 @@ where
     F: FnMut(String),
 {
     // .xx must be checked before .x since .xx starts with .x
-    let (_req, result) = if let Some(req) = input.strip_prefix(".xx ") {
+    let result = if let Some(req) = input.strip_prefix(".xx ") {
         let req = req.trim();
         if req.is_empty() { return Some(true); }
-        (req, expand_request_structured(req, &config.load()))
+        expand_request_structured(req, &config.load())
     } else if let Some(req) = input.strip_prefix(".x ") {
         let req = req.trim();
         if req.is_empty() { return Some(true); }
-        (req, expand_request(req, &config.load()))
+        expand_request(req, &config.load())
     } else {
         return None;
     };
     match result {
-        Ok(expanded) => Some(prompt_and_send(rl, &expanded, on_request)),
+        Ok(expanded) => Some(prompt_and_send(rl, &expanded, config, on_request)),
         Err(e) => {
             eprintln!("{}", e.display_colored());
             // Re-prompt with original input so user can fix
-            Some(prompt_and_send(rl, input, on_request))
+            Some(prompt_and_send(rl, input, config, on_request))
         }
     }
 }
