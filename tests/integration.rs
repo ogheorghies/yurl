@@ -844,3 +844,13 @@ fn error_in_batch_continues_processing() {
     // Invalid request should produce error
     assert!(stderr.contains("invalid") || stderr.contains("^"), "should show error for invalid request: {stderr}");
 }
+
+#[test]
+fn unknown_key_is_error() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "bogus": "val"}}"#);
+    let output = jurl_full(&input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown key: bogus"), "should reject unknown key: {stderr}");
+    assert!(output.stdout.is_empty(), "should not execute with unknown key");
+}

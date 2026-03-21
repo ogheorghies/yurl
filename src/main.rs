@@ -166,7 +166,9 @@ fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
                 "b" | "body" => body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
                 "q" | "query" => query = Some(val.clone()),
-                _ => {}
+                _ => return Err(RequestError::Structure {
+                    msg: format!("unknown key: {key}"),
+                }),
             }
         }
     }
@@ -374,7 +376,9 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
                 "b" | "body" => req_body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
                 "q" | "query" => query = Some(val.clone()),
-                _ => eprintln!("unknown key: {key}"),
+                _ => return Err(RequestError::Structure {
+                    msg: format!("unknown key: {key}"),
+                }),
             }
         }
     }
