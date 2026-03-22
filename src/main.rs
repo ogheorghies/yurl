@@ -254,6 +254,154 @@ pub fn expand_request_structured(line: &str, config: &Config) -> Result<String, 
     Ok(to_yaml_flow(&Value::Object(result)))
 }
 
+/// Preview a resolved request as multiline block YAML (wire-ready).
+pub fn preview_request_wire(line: &str, config: &Config) -> Result<String, RequestError> {
+    let (method, mut url, query, merged_headers, body, md, outputs) =
+        resolve_request(line, config)?;
+    yttp::append_query_to_url(&mut url, &query).ok();
+
+    let mut result = Map::new();
+    result.insert(method.to_lowercase(), Value::String(url));
+    if !merged_headers.is_empty() {
+        result.insert("h".to_string(), Value::Object(merged_headers));
+    }
+    if let Some(b) = body {
+        result.insert("b".to_string(), b);
+    }
+    if let Some(m) = md {
+        result.insert("md".to_string(), m);
+    }
+    for (k, v) in outputs {
+        result.insert(k, Value::String(v));
+    }
+    Ok(to_yaml_block(&Value::Object(result), 0))
+}
+
+/// Preview a resolved request as multiline block YAML (structured).
+pub fn preview_request_structured(line: &str, config: &Config) -> Result<String, RequestError> {
+    let (method, url, query, merged_headers, body, md, outputs) =
+        resolve_request(line, config)?;
+
+    let mut query_obj = Map::new();
+    let base_url = if let Ok(parsed) = Url::parse(&url) {
+        for (k, v) in parsed.query_pairs() {
+            query_obj.insert(k.into_owned(), Value::String(v.into_owned()));
+        }
+        let mut base = parsed.clone();
+        base.set_query(None);
+        base.to_string()
+    } else {
+        url
+    };
+    if let Some(Value::Object(q)) = query {
+        for (k, v) in q {
+            query_obj.insert(k, v);
+        }
+    }
+
+    let mut result = Map::new();
+    result.insert(method.to_lowercase(), Value::String(base_url));
+    if !query_obj.is_empty() {
+        result.insert("q".to_string(), Value::Object(query_obj));
+    }
+    if !merged_headers.is_empty() {
+        result.insert("h".to_string(), Value::Object(merged_headers));
+    }
+    if let Some(b) = body {
+        result.insert("b".to_string(), b);
+    }
+    if let Some(m) = md {
+        result.insert("md".to_string(), m);
+    }
+    for (k, v) in outputs {
+        result.insert(k, Value::String(v));
+    }
+    Ok(to_yaml_block(&Value::Object(result), 0))
+}
+
+/// Preview a resolved request as a curl command.
+pub fn preview_request_curl(line: &str, config: &Config) -> Result<String, RequestError> {
+    let (method, mut url, query, merged_headers, body, _md, _outputs) =
+        resolve_request(line, config)?;
+    yttp::append_query_to_url(&mut url, &query).ok();
+
+    let mut parts = vec![format!("curl -X {method} '{url}'")];
+    for (k, v) in &merged_headers {
+        let v_str = match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        parts.push(format!("  -H '{k}: {v_str}'"));
+    }
+    if let Some(b) = &body {
+        let body_str = match b {
+            Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        parts.push(format!("  -d '{body_str}'"));
+    }
+    Ok(parts.join(" \\\n"))
+}
+
+/// Serialize a serde_json::Value as multiline block YAML.
+fn to_yaml_block(val: &Value, indent: usize) -> String {
+    let prefix = "  ".repeat(indent);
+    match val {
+        Value::Null => "null\n".to_string(),
+        Value::Bool(b) => format!("{b}\n"),
+        Value::Number(n) => format!("{n}\n"),
+        Value::String(s) => {
+            if s.contains('\n') {
+                let mut out = "|\n".to_string();
+                for line in s.lines() {
+                    out.push_str(&format!("{prefix}  {line}\n"));
+                }
+                out
+            } else if needs_yaml_quoting(s) {
+                format!("'{}'\n", s.replace('\'', "''"))
+            } else {
+                format!("{s}\n")
+            }
+        }
+        Value::Array(arr) => {
+            if arr.is_empty() {
+                return "[]\n".to_string();
+            }
+            let mut out = "\n".to_string();
+            for item in arr {
+                let rendered = to_yaml_block(item, indent + 1);
+                let rendered = rendered.trim_start();
+                out.push_str(&format!("{prefix}- {rendered}"));
+            }
+            out
+        }
+        Value::Object(map) => {
+            if map.is_empty() {
+                return "{}\n".to_string();
+            }
+            let mut out = "\n".to_string();
+            for (k, v) in map {
+                let key = if needs_yaml_quoting(k) {
+                    format!("'{}'", k.replace('\'', "''"))
+                } else {
+                    k.to_string()
+                };
+                match v {
+                    Value::Object(_) | Value::Array(_) => {
+                        let rendered = to_yaml_block(v, indent + 1);
+                        out.push_str(&format!("{prefix}{key}:{rendered}"));
+                    }
+                    _ => {
+                        let rendered = to_yaml_block(v, indent + 1);
+                        out.push_str(&format!("{prefix}{key}: {rendered}"));
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
 /// Serialize a serde_json::Value as single-line YAML flow style.
 fn to_yaml_flow(val: &Value) -> String {
     match val {

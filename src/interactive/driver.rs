@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::{expand_request, expand_request_structured};
+use crate::{expand_request, expand_request_structured, preview_request_wire, preview_request_structured, preview_request_curl};
 use super::help;
 
 /// Input events from the user.
@@ -145,8 +145,11 @@ impl Driver {
     }
 
     fn handle_prefill_edit(&mut self, trimmed: &str) -> Vec<Effect> {
-        // Check if user prepended .x or .xx
+        // Check if user prepended .x or .p
         if let Some(effects) = self.try_expand(trimmed) {
+            return effects;
+        }
+        if let Some(effects) = self.try_preview(trimmed) {
             return effects;
         }
         // Otherwise execute the edited text
@@ -198,8 +201,13 @@ impl Driver {
             };
         }
 
-        // .xx / .x — expand
+        // .x — expand (wire-ready or structured)
         if let Some(effects) = self.try_expand(trimmed) {
+            return effects;
+        }
+
+        // .p — preview (wire-ready, structured, or curl)
+        if let Some(effects) = self.try_preview(trimmed) {
             return effects;
         }
 
@@ -263,21 +271,28 @@ impl Driver {
         }
     }
 
+    /// Parse `.x [w|s] {req}` — expand and prefill for editing.
     fn try_expand(&mut self, input: &str) -> Option<Vec<Effect>> {
-        // .xx must be checked before .x
-        let result = if let Some(req) = input.strip_prefix(".xx ") {
-            let req = req.trim();
-            if req.is_empty() { return Some(vec![]); }
-            expand_request_structured(req, &self.config.load())
-        } else if let Some(req) = input.strip_prefix(".x ") {
-            let req = req.trim();
-            if req.is_empty() { return Some(vec![]); }
-            expand_request(req, &self.config.load())
+        let rest = input.strip_prefix(".x ")?;
+        let rest = rest.trim();
+        if rest.is_empty() { return Some(vec![]); }
+
+        // Parse optional mode: .x w {req}, .x s {req}, or .x {req} (default w)
+        let (mode, req) = if let Some(r) = rest.strip_prefix("w ") {
+            ('w', r.trim())
+        } else if let Some(r) = rest.strip_prefix("s ") {
+            ('s', r.trim())
         } else {
-            return None;
+            ('w', rest)
         };
 
-        // Record the .x/.xx command to history
+        if req.is_empty() { return Some(vec![]); }
+
+        let result = match mode {
+            's' => expand_request_structured(req, &self.config.load()),
+            _ => expand_request(req, &self.config.load()),
+        };
+
         self.add_history(input);
         let mut effects = vec![Effect::AddHistory(input.to_string())];
 
@@ -288,12 +303,41 @@ impl Driver {
             }
             Err(e) => {
                 effects.push(Effect::Print(e.display_colored()));
-                // Re-prompt with original input so user can fix
                 self.prefill = Some(input.to_string());
                 effects.push(Effect::Prefill(input.to_string()));
             }
         }
         Some(effects)
+    }
+
+    /// Parse `.p [w|s|c] {req}` — preview as multiline YAML or curl. Read-only.
+    fn try_preview(&mut self, input: &str) -> Option<Vec<Effect>> {
+        let rest = input.strip_prefix(".p ")?;
+        let rest = rest.trim();
+        if rest.is_empty() { return Some(vec![]); }
+
+        let (mode, req) = if let Some(r) = rest.strip_prefix("w ") {
+            ('w', r.trim())
+        } else if let Some(r) = rest.strip_prefix("s ") {
+            ('s', r.trim())
+        } else if let Some(r) = rest.strip_prefix("c ") {
+            ('c', r.trim())
+        } else {
+            ('w', rest)
+        };
+
+        if req.is_empty() { return Some(vec![]); }
+
+        let result = match mode {
+            's' => preview_request_structured(req, &self.config.load()),
+            'c' => preview_request_curl(req, &self.config.load()),
+            _ => preview_request_wire(req, &self.config.load()),
+        };
+
+        match result {
+            Ok(output) => Some(vec![Effect::Print(output)]),
+            Err(e) => Some(vec![Effect::Print(e.display_colored())]),
+        }
     }
 
     fn handle_next(&mut self) -> Vec<Effect> {
@@ -413,58 +457,107 @@ mod tests {
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
     }
 
-    // --- Expand commands ---
+    // --- Expand commands (.x w / .x s) ---
 
     #[test]
-    fn expand_x_produces_prefill_and_history() {
+    fn expand_x_default_wire_ready() {
         let mut d = empty_driver();
         let effects = d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("get:"))));
         assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".x"))));
-        // History should NOT contain the expanded text
         assert!(!has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.contains("get:"))));
     }
 
     #[test]
-    fn expand_xx_produces_structured_prefill() {
+    fn expand_x_w_explicit() {
         let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".xx {g: "example.com?a=1"}"#.into()));
+        let effects = d.handle_input(Input::Text(r#".x w {g: example.com}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("get:"))));
+    }
+
+    #[test]
+    fn expand_x_s_structured() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".x s {g: "example.com?a=1"}"#.into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("q:"))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".xx"))));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".x s"))));
     }
 
     #[test]
     fn expand_error_reprompts_with_original() {
         let mut d = empty_driver();
         let effects = d.handle_input(Input::Text(".x {broken".into()));
-        // Should have error print and prefill with original
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(_))));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains(".x {broken"))));
     }
 
     #[test]
-    fn expand_then_edit_with_xx_re_expands() {
+    fn expand_then_prepend_x_s_re_expands() {
         let mut d = empty_driver();
-        // First: .x expands and sets prefill
-        let effects = d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
+        d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
         assert!(d.prefill.is_some());
 
-        // Simulate user prepending .xx to the pre-filled text
         let prefilled = d.prefill.clone().unwrap();
-        let edited = format!(".xx {}", &prefilled);
+        let edited = format!(".x s {}", &prefilled);
         let effects = d.handle_input(Input::Text(edited));
-        // Should produce a new Prefill with structured expansion
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".xx"))));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".x s"))));
     }
 
     #[test]
     fn prefill_edit_without_dot_command_executes() {
         let mut d = empty_driver();
-        // Set up a prefill (as if .x just expanded)
         d.prefill = Some("{get: https://example.com}".into());
         let effects = d.handle_input(Input::Text("{get: https://example.com}".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(s) if s.contains("example.com"))));
+    }
+
+    #[test]
+    fn xx_is_unknown_command() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".xx {g: example.com}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown command"))));
+    }
+
+    // --- Preview commands (.p w / .p s / .p c) ---
+
+    #[test]
+    fn preview_default_wire_ready() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".p {g: example.com}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("get:"))));
+        // .p should NOT add history or prefill
+        assert!(!has_effect(&effects, |e| matches!(e, Effect::AddHistory(_))));
+        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
+    }
+
+    #[test]
+    fn preview_w_explicit() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".p w {g: example.com}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("get:"))));
+    }
+
+    #[test]
+    fn preview_s_structured() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".p s {g: "example.com?a=1"}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("q:"))));
+    }
+
+    #[test]
+    fn preview_c_curl() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(r#".p c {g: example.com}"#.into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("curl"))));
+    }
+
+    #[test]
+    fn preview_error_prints_error() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(".p {broken".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(_))));
+        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
     }
 
     // --- Unknown commands ---
@@ -595,6 +688,15 @@ mod tests {
         // Press up — should get .x command, not expanded text
         let effects = d.handle_input(Input::Up);
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.starts_with(".x {g:"))));
+    }
+
+    #[test]
+    fn x_s_command_in_history() {
+        let mut d = empty_driver();
+        d.handle_input(Input::Text(r#".x s {g: "example.com?a=1"}"#.into()));
+
+        let effects = d.handle_input(Input::Up);
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.starts_with(".x s"))));
     }
 
     // --- Control keys ---

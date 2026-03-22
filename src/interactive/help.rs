@@ -81,19 +81,29 @@ pub fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
         String::new()
     };
     format!("\n\
-  {{request}}   send a JSON/YAML request\n\
-  {x}  {{req}}   expand request (wire-ready: query in URL)\n\
-  {xx} {{req}}   expand request (structured: q: and b: as objects)\n\
-  {c}          show current config\n\
-  {c}  {{cfg}}   replace active config\n\
+  {{request}}       send a JSON/YAML request\n\
+  {x} {{req}}       expand, edit, send (default: wire-ready)\n\
+  {xw} {{req}}     expand wire-ready\n\
+  {xs} {{req}}     expand structured (q: and b: as objects)\n\
+  {p} {{req}}       preview (default: wire-ready multiline YAML)\n\
+  {pw} {{req}}     preview wire-ready\n\
+  {ps} {{req}}     preview structured\n\
+  {pc} {{req}}     preview as curl command\n\
+  {c}            show current config\n\
+  {c}  {{cfg}}     replace active config\n\
 {step_cmds}\
-  {t}          show request templates\n\
-  {r}  {rdot}    show reference card\n\
-  {help}  {hdot}   show this help\n\
-  {ctrl_d}      exit\n\
+  {t}            show request templates\n\
+  {r}  {rdot}      show reference card\n\
+  {help}  {hdot}     show this help\n\
+  {ctrl_d}        exit\n\
 {history_line}\n",
         x = style(".x").bold(),
-        xx = style(".xx").bold(),
+        xw = style(".x w").bold(),
+        xs = style(".x s").bold(),
+        p = style(".p").bold(),
+        pw = style(".p w").bold(),
+        ps = style(".p s").bold(),
+        pc = style(".p c").bold(),
         c = style(".c").bold(),
         t = style(".t").bold(),
         r = style(".ref").bold(), rdot = style(".r").dim(),

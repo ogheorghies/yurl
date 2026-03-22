@@ -263,8 +263,11 @@ yurl v0.6.1
 |---|---|
 | `.next` / `.n` | load next piped request, edit, Enter to send |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
-| `.x {req}` | expand request (wire-ready: query in URL) |
-| `.xx {req}` | expand request (structured: q: and b: as objects) |
+| `.x {req}` | expand wire-ready, edit, send (`.x w` explicit) |
+| `.x s {req}` | expand structured (q: and b: as objects), edit, send |
+| `.p {req}` | preview wire-ready as multiline YAML (`.p w` explicit) |
+| `.p s {req}` | preview structured as multiline YAML |
+| `.p c {req}` | preview as curl command |
 | `.c` | show config; `.c {cfg}` to replace |
 | `.t` | show request templates |
 | `.ref` / `.r` | show reference card |
