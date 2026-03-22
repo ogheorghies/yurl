@@ -228,7 +228,7 @@ Application-level caching (not HTTP-compliant). Does not respect `Cache-Control`
 
 ### Step mode
 
-`--step` flag for interactive debugging of piped requests. See [Guide](docs/guide.md#step-mode) for full walkthrough.
+`--step` flag for interactive debugging of piped requests. `--ref` prints a reference card. See [Guide](docs/guide.md#step-mode) for full walkthrough.
 
 ```
 $ echo '
@@ -244,7 +244,7 @@ yurl v0.6.1
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
-> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s b)"}
+> {get: http://localhost:3000/toys, h: {Authorization: Bearer tok}, 1: j(s b)}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}
 
 > .go                                # run remaining 2 requests
@@ -263,6 +263,9 @@ yurl v0.6.1
 |---|---|
 | `.next` / `.n` | load next piped request, edit, Enter to send |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
-| `.x {req}` | expand with config, review before sending |
+| `.x {req}` | expand request (wire-ready: query in URL) |
+| `.xx {req}` | expand request (structured: q: and b: as objects) |
 | `.c` | show config; `.c {cfg}` to replace |
+| `.t` | show request templates |
+| `.ref` / `.r` | show reference card |
 | `.help` / `.h` | show help |
