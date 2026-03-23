@@ -248,7 +248,7 @@ yurl enters interactive mode when stdin is a terminal. Type requests directly, u
 | Dimension | Options | Default |
 |---|---|---|
 | Resolution | `m` merged | unmerged |
-| Layout | `v` vertical / `h` horizontal | horizontal |
+| Layout | `v` vertical (multiline) / `h` horizontal (flow) | horizontal |
 | Format | `c` curl / `j` JSON / `y` YAML | YAML |
 | Headers | `s` short (yttp shortcuts) | standard |
 

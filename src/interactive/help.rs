@@ -108,7 +108,7 @@ pub fn expand_help() -> String {
 
   Dimension    Options                   Default
   Resolution   {m} merged                unmerged
-  Layout       {v} vertical / {h} horiz  horizontal
+  Layout       {v} vertical (multiline) / {h} horizontal (flow)  horizontal
   Format       {c} curl / {j} JSON       YAML
   Headers      {s} short (yttp shortcuts) standard
 
