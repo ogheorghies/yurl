@@ -1,12 +1,13 @@
 use arc_swap::ArcSwap;
+use std::io::BufReader;
 use std::sync::Arc;
 
 use crate::config::Config;
 use crate::error::RequestError;
-use crate::{expand_with_flags, ExpandFlags};
+use crate::{StdinReader, expand_with_flags, ExpandFlags};
 use super::help;
 
-/// A lazy source of stdin documents for step mode.
+/// A lazy source of documents for .next/.go.
 /// Returns `None` when exhausted, `Some(Ok(json))` for valid documents,
 /// `Some(Err(e))` for parse errors.
 pub type StdinSource = Box<dyn FnMut() -> Option<Result<String, RequestError>>>;
@@ -70,7 +71,6 @@ pub struct Driver {
     history: Vec<String>,
     history_cursor: usize,
     stdin_source: Option<StdinSource>,
-    step_mode: bool,
     /// When Some, the next Text input is an edit of this pre-filled prompt.
     prefill: Option<String>,
     /// Path to history file (for .help display).
@@ -85,13 +85,11 @@ impl Driver {
         stdin_source: Option<StdinSource>,
         history_path: Option<String>,
     ) -> Self {
-        let step_mode = stdin_source.is_some();
         Driver {
             config,
             history: Vec::new(),
             history_cursor: 0,
             stdin_source,
-            step_mode,
             prefill: None,
             history_path,
             yaml_buf: None,
@@ -182,7 +180,7 @@ impl Driver {
     fn handle_command(&mut self, trimmed: &str, raw: &str) -> Vec<Effect> {
         // .help / .help x
         if trimmed == ".help" || trimmed == ".h" {
-            return vec![Effect::Print(help::help_text(&self.history_path, self.step_mode))];
+            return vec![Effect::Print(help::help_text(&self.history_path))];
         }
         if trimmed == ".help x" || trimmed == ".h x" {
             return vec![Effect::Print(help::expand_help())];
@@ -225,6 +223,18 @@ impl Driver {
                     vec![Effect::Print(format!("  error: {e}"))]
                 }
             };
+        }
+
+        // .step — load requests from file
+        if trimmed == ".step" || trimmed == ".s" {
+            if self.stdin_source.is_some() {
+                return vec![Effect::Print("  source already loaded — use .next or .go".to_string())];
+            }
+            return vec![Effect::Print("  usage: .step file.yaml".to_string())];
+        }
+        if let Some(path) = trimmed.strip_prefix(".step ").or_else(|| trimmed.strip_prefix(".s ")) {
+            let path = path.trim();
+            return self.handle_step(path);
         }
 
         // .x — expand with composable flags
@@ -379,6 +389,17 @@ impl Driver {
             effects.push(Effect::Print("  no more requests".to_string()));
         }
         effects
+    }
+
+    fn handle_step(&mut self, path: &str) -> Vec<Effect> {
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return vec![Effect::Print(format!("  error: {e}: {path}"))],
+        };
+        let reader = BufReader::new(file);
+        let mut stdin_reader = StdinReader::new(reader);
+        self.stdin_source = Some(Box::new(move || stdin_reader.next()));
+        vec![Effect::Print(format!("  loaded {path}"))]
     }
 
     fn add_history(&mut self, entry: &str) {
@@ -728,6 +749,52 @@ mod tests {
         let mut d = empty_driver();
         let effects = d.handle_input(Input::Text(".next".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
+    }
+
+    // --- .step command ---
+
+    #[test]
+    fn step_loads_file() {
+        let mut d = empty_driver();
+        // Write a temp file with a JSONL request
+        let dir = std::env::temp_dir();
+        let path = dir.join("yurl_test_step.jsonl");
+        std::fs::write(&path, r#"{"g": "http://example.com"}"#).unwrap();
+        let effects = d.handle_input(Input::Text(format!(".step {}", path.display())));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("loaded"))));
+        assert!(d.stdin_source.is_some());
+        // .next should read from the file
+        let effects = d.handle_input(Input::Text(".next".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn step_missing_file_error() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(".step /nonexistent/file.yaml".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
+    }
+
+    #[test]
+    fn step_no_args_no_source() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(".step".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("usage"))));
+    }
+
+    #[test]
+    fn step_no_args_with_source() {
+        let mut d = step_driver_ok(vec!["{g: example.com}"]);
+        let effects = d.handle_input(Input::Text(".step".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("already loaded"))));
+    }
+
+    #[test]
+    fn step_shortcut() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(".s /nonexistent/file.yaml".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
     }
 
     // --- History navigation ---

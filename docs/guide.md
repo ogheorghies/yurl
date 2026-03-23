@@ -198,16 +198,17 @@ If `name` doesn't match any alias, the URL is used unchanged.
 
 ## Step Mode
 
-The `--step` flag enables interactive debugging of piped requests:
+The `-i` flag enables interactive debugging of piped requests. You can also load requests from a file mid-session with `.step file.yaml`.
 
 ```
-cat requests.yaml | yurl --step '{api: api.example.com/v1, h: {a!: my-token}}'
+cat requests.yaml | yurl -i '{api: api.example.com/v1, h: {a!: my-token}}'
 ```
 
-This enters the REPL with piped requests available as a queue. Commands:
+This enters the REPL with piped requests available via `.next`/`.go`. Commands:
 
-- **`.next`** (`.n`) — loads the next piped request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
-- **`.go`** (`.g`) — executes all remaining piped requests. Ctrl-C breaks back to the prompt.
+- **`.step file`** (`.s file`) — loads requests from a file for stepping through.
+- **`.next`** (`.n`) — loads the next request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
+- **`.go`** (`.g`) — executes all remaining requests. Ctrl-C breaks back to the prompt.
 - **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.next`: press Ctrl-A and prepend `.x ` to expand a queued request.
 - **`.c`** — shows the current config summary. **`.c {config}`** replaces the active config. Subsequent requests and `.x` expansions use the new config.
 - **`.help`** (`.h`) — shows help.
@@ -221,7 +222,7 @@ $ echo '
 {g: api!/toys}
 {g: api!/toys/1}
 {p: api!/toys, b: {name: Owl}}
-' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
+' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
 yurl v0.5.0
 

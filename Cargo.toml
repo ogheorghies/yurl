@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 license = "MIT"
 description = "HTTP client — batch, interactive, concurrent, streaming, output routing, caching"

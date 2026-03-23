@@ -58,7 +58,7 @@ pub fn reference_card() -> String {
     )
 }
 
-pub fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
+pub fn help_text(history_path: &Option<String>) -> String {
     let history_line = history_path
         .as_deref()
         .map(|p| {
@@ -70,22 +70,14 @@ pub fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
             format!("\nHistory: {display}\n")
         })
         .unwrap_or_default();
-    let step_cmds = if step_mode {
-        format!("\
-  {next}  {ndot}   load next piped request, edit, Enter to send\n\
-  {go}    {gdot}   run all remaining piped requests, Ctrl-C to stop\n",
-            next = style(".next").bold(), ndot = style(".n").dim(),
-            go = style(".go").bold(), gdot = style(".g").dim(),
-        )
-    } else {
-        String::new()
-    };
     format!("\n\
   {{request}}            send a JSON/YAML request\n\
   {x} {flags} {{req}}   expand — {help_x} for flag reference\n\
   {c}               show current config\n\
   {c}  {{cfg}}        replace active config\n\
-{step_cmds}\
+  {step} {sdot}   load requests from file\n\
+  {next}  {ndot}   load next request, edit, Enter to send\n\
+  {go}    {gdot}   run remaining requests, Ctrl-C to stop\n\
   {t}               show request templates\n\
   {r}  {rdot}         show reference card\n\
   {help}  {hdot}        show this help\n\
@@ -95,6 +87,9 @@ pub fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
         flags = style("[flags]").dim(),
         help_x = style(".help x").bold(),
         c = style(".c").bold(),
+        step = style(".step file").bold(), sdot = style(".s").dim(),
+        next = style(".next").bold(), ndot = style(".n").dim(),
+        go = style(".go").bold(), gdot = style(".g").dim(),
         t = style(".t").bold(),
         r = style(".ref").bold(), rdot = style(".r").dim(),
         help = style(".help").bold(), hdot = style(".h").dim(),

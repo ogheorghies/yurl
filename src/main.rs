@@ -30,9 +30,9 @@ struct Args {
     #[argh(switch, short = 'v')]
     version: bool,
 
-    /// step through piped stdin requests interactively (.next / .go)
-    #[argh(switch)]
-    step: bool,
+    /// interactive mode (force REPL even with piped stdin)
+    #[argh(switch, short = 'i')]
+    interactive: bool,
 
     /// print reference card
     #[argh(switch, long = "ref")]
@@ -881,7 +881,7 @@ fn pre_parse_for_matching(line: &str, apis: &std::collections::HashMap<String, S
 /// Streaming stdin reader that yields one request at a time.
 /// Supports JSONL (one JSON object per line) and YAML (documents separated by `---`).
 /// Format is auto-detected from the first non-empty line.
-struct StdinReader<R: BufRead> {
+pub(crate) struct StdinReader<R: BufRead> {
     lines: R,
     is_yaml: Option<bool>,
     buf: String,
@@ -1169,10 +1169,10 @@ async fn main() {
         })
     };
 
-    if io::stdin().is_terminal() || args.step {
+    if io::stdin().is_terminal() || args.interactive {
         // Interactive mode — run REPL on a blocking thread, send lines via channel
-        // In --step mode, StdinReader is created on the REPL thread as a lazy source
-        let is_step = args.step && !io::stdin().is_terminal();
+        // In -i mode with piped stdin, StdinReader is created on the REPL thread as a lazy source
+        let is_step = args.interactive && !io::stdin().is_terminal();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 

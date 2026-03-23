@@ -1,6 +1,6 @@
 # yurl — "Better curl"
 
-HTTP client — [batch](#batch-config), [interactive](#step-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
+HTTP client — [batch](#batch-config), [interactive](#interactive-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching).
 Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#yttp--request-and-response) JSON/YAML facade.
 
 [Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
@@ -268,13 +268,14 @@ curl -X GET 'https://api.example.com/toys' \
   -H 'Authorization: Bearer tok'
 ```
 
-#### Step mode
+#### Interactive mode
 
-`--step` flag for interactive debugging of piped requests. See [Guide](docs/guide.md#step-mode) for full walkthrough.
+`-i` flag for interactive debugging of piped requests. Or use `.step file.yaml` to load from a file mid-session. See [Guide](docs/guide.md#step-mode) for full walkthrough.
 
 | Command | Description |
 |---|---|
-| `.next` / `.n` | load next piped request, edit, Enter to send |
+| `.step file` / `.s file` | load requests from file |
+| `.next` / `.n` | load next request, edit, Enter to send |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
 
 ```
@@ -282,9 +283,9 @@ $ echo '
 {g: api!/toys}
 {g: api!/toys/1}
 {p: api!/toys, b: {name: Owl}}
-' | yurl --step '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
+' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.9.1
+yurl v0.10.0
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged

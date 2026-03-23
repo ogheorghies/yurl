@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::config::Config;
 
 struct YurlHelper {
-    step_mode: bool,
+    has_source: bool,
 }
 
 impl Helper for YurlHelper {}
@@ -35,8 +35,8 @@ impl Hinter for YurlHelper {
     type Hint = String;
     fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
         if line.is_empty() {
-            let hint = if self.step_mode {
-                "requests are piped. type .next — .help, .t, or .ref"
+            let hint = if self.has_source {
+                "type .next — .help, .t, or .ref"
             } else {
                 "type request — .help, .t, or .ref"
             };
@@ -75,13 +75,13 @@ where
     F: FnMut(String),
 {
     let history_path = dirs_hint();
-    let step_mode = stdin_source.is_some();
+    let has_source = stdin_source.is_some();
 
     let rl_config = rustyline::Config::builder()
         .behavior(rustyline::config::Behavior::PreferTerm)
         .build();
     let mut rl = Editor::with_config(rl_config).expect("failed to initialize editor");
-    rl.set_helper(Some(YurlHelper { step_mode }));
+    rl.set_helper(Some(YurlHelper { has_source }));
 
     let mut has_history = false;
     if let Some(ref path) = history_path {
