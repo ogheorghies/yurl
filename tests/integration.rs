@@ -846,19 +846,18 @@ fn syntax_error_in_json_batch_stops_before_subsequent() {
 }
 
 #[test]
-fn content_error_in_json_batch_continues() {
+fn content_error_in_json_batch_fails() {
     let b = base();
-    // Content errors (valid JSON, bad request) should continue
+    // Content errors (valid JSON, bad request) should fail the batch
     let input = format!(
         r#"{{"g": "{b}/get", "1": "s"}}
 {{"g": {{"nested": true}}}}
 {{"g": "{b}/get", "1": "s"}}"#
     );
     let output = jurl_full(&input, None);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("must be a string"), "should show content error: {stderr}");
-    assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed: {stdout}");
+    assert!(!output.status.success(), "batch should exit non-zero on user error");
 }
 
 #[test]
@@ -925,16 +924,32 @@ fn yaml_content_error_missing_method() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("invalid YAML"), "should not be a YAML syntax error: {stderr}");
     assert!(stderr.contains("error"), "should show a content error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on user error");
 }
 
 #[test]
-fn yaml_content_error_in_batch_continues() {
+fn yaml_content_error_in_batch_fails() {
     let b = base();
     // First doc: valid request. Second doc: valid YAML, bad request (no method). Third: valid.
     let input = format!("g: {b}/get\n1: s\n---\nfoo: bar\n---\ng: {b}/get\n1: s");
     let output = jurl_full(&input, None);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("error"), "should show content error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on user error");
+}
+
+#[test]
+fn network_error_in_batch_continues() {
+    let b = base();
+    // Network error (connection refused) should not stop the batch
+    let input = format!(
+        r#"{{"g": "{b}/get", "1": "s"}}
+{{"g": "http://127.0.0.1:1/test", "1": "s"}}
+{{"g": "{b}/get", "1": "s"}}"#
+    );
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error"), "should show network error: {stderr}");
     assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed: {stdout}");
 }

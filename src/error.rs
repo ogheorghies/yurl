@@ -46,6 +46,12 @@ impl fmt::Display for RequestError {
 }
 
 impl RequestError {
+    /// Returns true for errors caused by invalid input (parse, structure, URL)
+    /// as opposed to runtime/server errors (network).
+    pub fn is_user_error(&self) -> bool {
+        !matches!(self, RequestError::Network { .. })
+    }
+
     /// Create from a yttp parse error, attaching the original input.
     pub fn from_parse(input: &str, err: yttp::Error) -> Self {
         match err {

@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Semaphore;
 use url::Url;
 
@@ -1086,6 +1086,8 @@ async fn main() {
 
     let idx_counter = Arc::new(AtomicUsize::new(0));
 
+    let fatal = Arc::new(AtomicBool::new(false));
+
     // Spawn a request task and return its JoinHandle
     let spawn_request = |line: String,
                          client: Client,
@@ -1100,11 +1102,13 @@ async fn main() {
                          cache_stores: Arc<cache::CacheStores>,
                          idx: usize,
                          concurrent: bool,
-                         yaml_mode: bool| {
+                         yaml_mode: bool,
+                         fatal: Arc<AtomicBool>| {
         let pre_parsed = match pre_parse_for_matching(&line, &config.apis) {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("{}", e.display_colored());
+                fatal.store(true, Ordering::Relaxed);
                 return tokio::spawn(async {});
             }
         };
@@ -1125,6 +1129,9 @@ async fn main() {
             let buf = match execute(&line, &client, idx, &config, concurrent, yaml_mode, Some(&cache_stores), color_stdout, color_stderr).await {
                 Ok(buf) => buf,
                 Err(e) => {
+                    if e.is_user_error() {
+                        fatal.store(true, Ordering::Relaxed);
+                    }
                     eprintln!("{}", e.display_colored());
                     return;
                 }
@@ -1222,6 +1229,7 @@ async fn main() {
                 idx,
                 concurrent,
                 yaml_mode,
+                Arc::clone(&fatal),
             );
             if let Err(e) = handle.await {
                 eprintln!("  request failed: {e}");
@@ -1265,6 +1273,9 @@ async fn main() {
         let mut handles = Vec::new();
 
         while let Some((idx, line)) = rx.recv().await {
+            if fatal.load(Ordering::Relaxed) {
+                break;
+            }
             let handle = spawn_request(
                 line,
                 client.clone(),
@@ -1280,6 +1291,7 @@ async fn main() {
                 idx,
                 concurrent,
                 yaml_mode,
+                Arc::clone(&fatal),
             );
             handles.push(handle);
         }
@@ -1292,6 +1304,8 @@ async fn main() {
         }
         reader_handle.join().ok();
     }
+
+    let exit_code = if fatal.load(Ordering::Relaxed) { 1 } else { 0 };
 
     // Finish progress bars
     if let Some(pb) = &progress_bar {
@@ -1307,6 +1321,10 @@ async fn main() {
         } else {
             wb.finish();
         }
+    }
+
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 }
 
