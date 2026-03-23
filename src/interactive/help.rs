@@ -106,30 +106,29 @@ pub fn expand_help() -> String {
     format!("\
 {title}
 
-  Flags (composable, any order):
-    {m}   merged — apply config headers and rules (default: base only)
-    {v}   vertical — multiline output
-    {j}   JSON format (default: YAML)
-    {c}   curl format
-    {s}   short — collapse headers to yttp shortcuts
+  Dimension    Options                   Default
+  Resolution   {m} merged                unmerged
+  Layout       {v} vertical / {h} horiz  horizontal
+  Format       {c} curl / {j} JSON       YAML
+  Headers      {s} short (yttp shortcuts) standard
 
-  Horizontal output pre-fills the prompt for editing.
-  Vertical and curl output prints to screen.
+  Flags compose freely. Horizontal pre-fills prompt for editing.
+  Vertical and curl print to screen.
 
-  Examples:
-    .x {{req}}         horizontal YAML (edit)
-    .x v {{req}}       vertical YAML (print)
-    .x m {{req}}       merged horizontal YAML (edit)
-    .x mv {{req}}      merged vertical YAML (print)
-    .x j {{req}}       horizontal JSON (edit)
-    .x jv {{req}}      vertical JSON (print)
-    .x c {{req}}       single-line curl (print)
-    .x vc {{req}}      multiline curl (print)
-    .x ms {{req}}      merged, short headers (edit)
-    .x mvs {{req}}     merged, vertical, short (print)\n",
+  .x {{req}}         horizontal YAML (edit)
+  .x {m} {{req}}       merged (edit)
+  .x {v} {{req}}       vertical YAML (print)
+  .x {m}{v} {{req}}      merged vertical (print)
+  .x {j} {{req}}       JSON (edit)
+  .x {j}{v} {{req}}      pretty-printed JSON (print)
+  .x {c} {{req}}       single-line curl (print)
+  .x {v}{c} {{req}}      multiline curl (print)
+  .x {m}{s} {{req}}      merged, short headers (edit)
+  .x {m}{v}{s} {{req}}     merged, vertical, short (print)\n",
         title = style(".x [flags] {request}").bold(),
         m = style("m").bold(),
         v = style("v").bold(),
+        h = style("h").bold(),
         j = style("j").bold(),
         c = style("c").bold(),
         s = style("s").bold(),

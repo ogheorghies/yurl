@@ -245,15 +245,14 @@ yurl enters interactive mode when stdin is a terminal. Type requests directly, u
 
 `.x [flags] {request}` — resolve a request with optional flags. Horizontal output pre-fills the prompt for editing. Vertical and curl output prints.
 
-| Flag | Effect | Default |
+| Dimension | Options | Default |
 |---|---|---|
-| `m` | merged — apply config headers and rules | unmerged |
-| `v` | vertical — multiline output | horizontal |
-| `j` | JSON format | YAML |
-| `c` | curl format | YAML |
-| `s` | short — collapse headers to yttp shortcuts | standard |
+| Resolution | `m` merged | unmerged |
+| Layout | `v` vertical / `h` horizontal | horizontal |
+| Format | `c` curl / `j` JSON / `y` YAML | YAML |
+| Headers | `s` short (yttp shortcuts) | standard |
 
-Flags compose: `.x mv {req}` = merged vertical YAML, `.x vc {req}` = multiline curl.
+Flags compose freely: `.x mv` = merged vertical, `.x vc` = multiline curl, `.x ms` = merged short.
 
 ```
 > .x {g: api!/toys}
