@@ -252,7 +252,7 @@ yurl enters interactive mode when stdin is a terminal. Type requests directly, u
 | Format | `c` curl / `j` JSON / `y` YAML | YAML |
 | Headers | `s` short (yttp shortcuts) | standard |
 
-Flags compose freely: `.x mv` = merged vertical, `.x vc` = multiline curl, `.x ms` = merged short.
+Flags compose freely: `.x mv` = merged multiline, `.x vc` = multiline curl, `.x ms` = merged short.
 
 ```
 > .x {g: api!/toys}

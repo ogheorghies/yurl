@@ -112,19 +112,19 @@ pub fn expand_help() -> String {
   Format       {c} curl / {j} JSON       YAML
   Headers      {s} short (yttp shortcuts) standard
 
-  Flags compose freely. Horizontal pre-fills prompt for editing.
-  Vertical and curl print to screen.
+  Flags compose freely. Flow pre-fills prompt for editing.
+  Multiline and curl print to screen.
 
-  .x {{req}}         horizontal YAML (edit)
+  .x {{req}}         YAML flow (edit)
   .x {m} {{req}}       merged (edit)
-  .x {v} {{req}}       vertical YAML (print)
-  .x {m}{v} {{req}}      merged vertical (print)
-  .x {j} {{req}}       JSON (edit)
-  .x {j}{v} {{req}}      pretty-printed JSON (print)
-  .x {c} {{req}}       single-line curl (print)
-  .x {v}{c} {{req}}      multiline curl (print)
+  .x {v} {{req}}       YAML multiline (print)
+  .x {m}{v} {{req}}      merged multiline (print)
+  .x {j} {{req}}       JSON flow (edit)
+  .x {j}{v} {{req}}      JSON multiline (print)
+  .x {c} {{req}}       curl flow (print)
+  .x {v}{c} {{req}}      curl multiline (print)
   .x {m}{s} {{req}}      merged, short headers (edit)
-  .x {m}{v}{s} {{req}}     merged, vertical, short (print)\n",
+  .x {m}{v}{s} {{req}}     merged, multiline, short (print)\n",
         title = style(".x [flags] {request}").bold(),
         m = style("m").bold(),
         v = style("v").bold(),
