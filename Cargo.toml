@@ -36,13 +36,17 @@ path = "src/main.rs"
 
 [dev-dependencies]
 axum = "0.8"
+mockinx = { path = "../mockinx" }
 multer = "3"
+reqwest = { version = "0.12", features = ["blocking"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "http1"] }
-tower = "0.5"
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+serde_yml = "0.0.12"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = "0.5"
 
 [[example]]
 name = "demo-server"

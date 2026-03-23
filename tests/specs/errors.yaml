@@ -1,0 +1,131 @@
+# Error handling specs — parse, content, network, config, format errors
+
+# === YAML syntax errors ===
+
+- name: invalid YAML syntax fails in batch
+  input: "key: value: bad"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["invalid YAML"]}
+
+- name: invalid YAML stops before subsequent docs
+  input: "key: value: bad\n---\ng: http://example.com\n1: s"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["invalid YAML"]}
+
+# === JSONL/yttp parse errors ===
+
+- name: broken JSONL fails in batch
+  input: "{broken"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["invalid"]}
+
+- name: parse error in JSONL batch stops
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "1": "s"}\n{broken\n{"g": "mx!/ok", "1": "s"}'
+  assert:
+    exit_code: 1
+
+# === Content errors (valid syntax, bad request) ===
+
+- name: missing method is user error
+  input: "foo: bar"
+  assert:
+    exit_code: 1
+    stderr:
+      contains: ["error"]
+      not_contains: ["invalid YAML"]
+
+- name: YAML content error in batch fails
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: "g: mx!/ok\n1: s\n---\nfoo: bar\n---\ng: mx!/ok\n1: s"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["error"]}
+
+- name: URL not string prints error
+  input: '{"g": {"nested": true}}'
+  assert:
+    exit_code: 1
+    stderr: {contains: ["must be a string"]}
+
+- name: unknown key is error
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "bogus": "val"}'
+  assert:
+    exit_code: 1
+    stderr: {contains: ["unknown key"]}
+
+- name: YAML flow with empty value is error
+  input: "{g: http://example.com, adad:}"
+  assert:
+    exit_code: 1
+
+- name: content error in JSON batch fails
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "1": "s"}\n{"g": {"nested": true}}\n{"g": "mx!/ok", "1": "s"}'
+  assert:
+    exit_code: 1
+    stderr: {contains: ["must be a string"]}
+
+# === Format errors ===
+
+- name: unclosed format prints error
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "1": "y(s!"}'
+  assert:
+    exit_code: 1
+    stderr: {contains: ["unclosed format"]}
+
+- name: unknown format atom prints error
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "1": "j(bogus)"}'
+  assert:
+    exit_code: 1
+    stderr: {contains: ["unknown atom"]}
+
+# === Config errors ===
+
+- name: invalid config exits with error
+  input: '{"g": "http://example.com"}'
+  config: "{broken"
+  assert:
+    exit_code: 1
+
+# === Network errors (continue in batch) ===
+
+- name: connection refused prints error
+  input: '{"g": "http://127.0.0.1:1/test"}'
+  assert:
+    exit_code: 0
+    stderr: {contains: ["error"]}
+
+- name: network error in batch continues
+  rules:
+    - match: {g: /ok}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/ok", "1": "s"}\n{"g": "http://127.0.0.1:1/test", "1": "s"}\n{"g": "mx!/ok", "1": "s"}'
+  assert:
+    stderr: {contains: ["error"]}
+    stdout: {contains: ["200"]}
+
+# === Edge: empty input ===
+
+- name: empty input exits cleanly
+  input: ""
+  assert:
+    exit_code: 0

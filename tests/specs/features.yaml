@@ -1,0 +1,575 @@
+# Feature coverage — all documented yurl features
+
+# === Output formats ===
+
+- name: default output has s h b
+  rules:
+    - match: {g: /get}
+      reply: {s: 200, h: {ct!: j!}, b: {hello: world}}
+  input: "{g: mx!/get}"
+  assert:
+    stdout: {contains: ["hello", "200"]}
+
+- name: raw body output
+  rules:
+    - match: {g: /raw}
+      reply: {s: 200, h: {ct!: j!}, b: {key: val}}
+  input: '{"g": "mx!/raw", "1": "b"}'
+  assert:
+    stdout: '{"key":"val"}'
+
+- name: raw status line
+  rules:
+    - match: {g: /status}
+      reply: {s: 200}
+  input: '{"g": "mx!/status", "1": "s"}'
+  assert:
+    stdout: "HTTP/1.1 200 OK"
+
+- name: status code atom
+  rules:
+    - match: {g: /sc}
+      reply: {s: 200}
+  input: '{"g": "mx!/sc", "1": "s.code"}'
+  assert:
+    stdout: "200"
+
+- name: status parts j(s.code s.text s.version)
+  rules:
+    - match: {g: /sp}
+      reply: {s: 200}
+  input: '{"g": "mx!/sp", "1": "j(s.code s.text s.version)"}'
+  assert:
+    stdout: {json: {s.c: 200, s.t: "OK", s.v: "HTTP/1.1"}}
+
+- name: yurl outputs YAML by default
+  rules:
+    - match: {g: /yurl}
+      reply: {s: 200, h: {ct!: j!}, b: {x: 1}}
+  input: "{g: mx!/yurl}"
+  bin: yurl
+  assert:
+    stdout: {contains: ["s:", "h:", "b:"]}
+
+- name: stderr output destination
+  rules:
+    - match: {g: /dest}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/dest", "2": "s"}'
+  assert:
+    stderr: "HTTP/1.1 200 OK"
+
+- name: stdout and stderr simultaneously
+  rules:
+    - match: {g: /both}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/both", "1": "j(s.code)", "2": "s"}'
+  assert:
+    stdout: {json: {s.c: 200}}
+    stderr: "HTTP/1.1 200 OK"
+
+- name: config default output format
+  rules:
+    - match: {g: /cfgout}
+      reply: {s: 200, b: ok}
+  input: "{g: mx!/cfgout}"
+  config: '{1: "j(s.code)"}'
+  assert:
+    stdout: {json: {s.c: 200}}
+
+- name: per-request output overrides config
+  rules:
+    - match: {g: /override}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/override"}\n{"g": "mx!/override", "1": "s"}'
+  config: '{1: "j(idx s.code)"}'
+  assert:
+    stdout: {contains: ['"idx"', "HTTP/1.1 200 OK"]}
+
+# === Methods ===
+
+- name: GET method
+  rules:
+    - match: {g: /m}
+      reply: {s: 200, b: got}
+  input: "{g: mx!/m, 1: b}"
+  assert:
+    stdout: "got"
+
+- name: POST method
+  rules:
+    - match: {p: /m}
+      reply: {s: 201, b: posted}
+  input: "{p: mx!/m, 1: b}"
+  assert:
+    stdout: "posted"
+
+- name: DELETE method
+  rules:
+    - match: {d: /m}
+      reply: {s: 204}
+  input: "{d: mx!/m, 1: s.code}"
+  assert:
+    stdout: "204"
+
+- name: PUT method
+  rules:
+    - match: {put: /m}
+      reply: {s: 200, b: put-ok}
+  input: "{put: mx!/m, 1: b}"
+  assert:
+    stdout: "put-ok"
+
+- name: PATCH method
+  rules:
+    - match: {patch: /m}
+      reply: {s: 200, b: patched}
+  input: "{patch: mx!/m, 1: b}"
+  assert:
+    stdout: "patched"
+
+- name: HEAD method
+  rules:
+    - match: {head: /m}
+      reply: {s: 200, h: {X-Custom: yes}}
+  input: "{head: mx!/m, 1: j(s.code)}"
+  assert:
+    stdout: {json: {s.c: 200}}
+
+- name: OPTIONS method
+  rules:
+    - match: {options: /m}
+      reply: {s: 200}
+  input: "{options: mx!/m, 1: j(s.code)}"
+  assert:
+    stdout: {json: {s.c: 200}}
+
+- name: TRACE method
+  rules:
+    - match: {trace: /m}
+      reply: {s: 200}
+  input: "{trace: mx!/m, 1: j(s.code)}"
+  assert:
+    stdout: {json: {s.c: 200}}
+
+- name: method is case insensitive
+  rules:
+    - match: {p: /m}
+      reply: {s: 201}
+  input: '{"POST": "mx!/m", "1": "s.code"}'
+  assert:
+    stdout: "201"
+
+# === Body encoding ===
+
+- name: POST with JSON body
+  rules:
+    - match: {p: /json}
+      reply: {s: 200, b: {reflect!: [i.h, i.b]}}
+  input: '{"p": "mx!/json", "b": {"key": "val"}, "1": "b"}'
+  assert:
+    stdout:
+      json:
+        i.h.content-type: "application/json"
+        i.b.key: "val"
+
+- name: form urlencoded with c! f!
+  rules:
+    - match: {p: /form}
+      reply: {s: 200, b: {reflect!: [i.h, i.b]}}
+  input: "{p: mx!/form, h: {c!: f!}, b: {city: Berlin}, 1: b}"
+  assert:
+    stdout:
+      json:
+        i.h.content-type: "application/x-www-form-urlencoded"
+        i.b: "city=Berlin"
+
+- name: form urlencoded with full content-type
+  rules:
+    - match: {p: /form2}
+      reply: {s: 200, b: {reflect!: [i.h, i.b]}}
+  input: '{"p": "mx!/form2", "h": {"Content-Type": "application/x-www-form-urlencoded"}, "b": {"city": "Berlin"}, "1": "b"}'
+  assert:
+    stdout:
+      json:
+        i.h.content-type: "application/x-www-form-urlencoded"
+        i.b: "city=Berlin"
+
+- name: multipart with c! m!
+  rules:
+    - match: {p: /multi}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{p: mx!/multi, h: {c!: m!}, b: {desc: test}, 1: b}"
+  assert:
+    stdout: {contains: ["multipart/form-data"]}
+
+# === Auth ===
+
+- name: bearer auth via bare token
+  rules:
+    - match: {g: /auth}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/auth", "h": {"a!": "my-token"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.authorization: "Bearer my-token"}}
+
+- name: bearer! shortcut
+  rules:
+    - match: {g: /auth}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/auth", "h": {"a!": "bearer!tok"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.authorization: "Bearer tok"}}
+
+- name: basic auth with array
+  rules:
+    - match: {g: /auth}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/auth", "h": {"a!": ["user", "pass"]}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.authorization: "Basic dXNlcjpwYXNz"}}
+
+- name: basic!user:pass shortcut
+  rules:
+    - match: {g: /auth}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/auth", "h": {"a!": "basic!user:pass"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.authorization: "Basic dXNlcjpwYXNz"}}
+
+- name: explicit auth scheme passthrough
+  rules:
+    - match: {g: /auth}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/auth", "h": {"a!": "Digest abc123"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.authorization: "Digest abc123"}}
+
+# === Header shortcuts ===
+
+- name: a! expands to application/
+  rules:
+    - match: {g: /hs}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/hs", "h": {"Accept": "a!/xml"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.accept: "application/xml"}}
+
+- name: t! expands to text/
+  rules:
+    - match: {g: /hs}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/hs", "h": {"Accept": "t!/csv"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.accept: "text/csv"}}
+
+- name: i! expands to image/
+  rules:
+    - match: {g: /hs}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/hs", "h": {"Accept": "i!/png"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.h.accept: "image/png"}}
+
+# === Metadata ===
+
+- name: scalar metadata in output
+  rules:
+    - match: {g: /md}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/md", "md": "batch-1", "1": "j(idx md s.code)"}'
+  assert:
+    stdout: {json: {idx: 0, md: "batch-1", s.c: 200}}
+
+- name: object metadata with field selection
+  rules:
+    - match: {g: /md}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/md", "md": {"id": 42, "tag": "test"}, "1": "j(md.id)"}'
+  assert:
+    stdout: {json: {md.id: 42}}
+
+- name: object metadata all fields
+  rules:
+    - match: {g: /md}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/md", "md": {"id": 42, "tag": "test"}, "1": "j(md)"}'
+  assert:
+    stdout: {json: {md.id: 42, md.tag: "test"}}
+
+# === API aliases ===
+
+- name: single API alias
+  rules:
+    - match: {g: /data}
+      reply: {s: 200, b: aliased}
+  input: "{g: api!/data, 1: b}"
+  config: "{api: mx!}"
+  assert:
+    stdout: "aliased"
+
+- name: multiple API aliases
+  rules:
+    - match: {g: /a-ep}
+      reply: {s: 200, b: from-a}
+    - match: {g: /b-ep}
+      reply: {s: 200, b: from-b}
+  input: "{g: a!/a-ep, 1: b}\n{g: b!/b-ep, 1: b}"
+  config: "{api: {a: mx!, b: mx!}}"
+  assert:
+    stdout: {contains: ["from-a", "from-b"]}
+
+- name: API alias no path
+  rules:
+    - match: {g: /}
+      reply: {s: 200, b: root}
+  input: "{g: api!, 1: b}"
+  config: "{api: mx!}"
+  assert:
+    stdout: "root"
+
+- name: unrecognized alias passes through
+  rules:
+    - match: {g: /pass}
+      reply: {s: 200, b: ok}
+  input: "{g: mx!/pass, 1: b}"
+  config: "{api: mx!}"
+  assert:
+    stdout: "ok"
+
+# === Config headers ===
+
+- name: config default headers sent
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{g: mx!/cfg, 1: b}"
+  config: '{h: {X-Custom: yes}}'
+  assert:
+    stdout: {json: {i.h.x-custom: "yes"}}
+
+- name: config auth shortcut sent
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{g: mx!/cfg, 1: b}"
+  config: '{h: {a!: bearer!tok}}'
+  assert:
+    stdout: {json: {i.h.authorization: "Bearer tok"}}
+
+- name: request headers override config
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/cfg", "h": {"X-Val": "custom"}, "1": "b"}'
+  config: '{h: {X-Val: default}}'
+  assert:
+    stdout: {json: {i.h.x-val: "custom"}}
+
+- name: config and request headers merge
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/cfg", "h": {"X-Req": "yes"}, "1": "b"}'
+  config: '{h: {X-Cfg: "yes"}}'
+  assert:
+    stdout: {json: {i.h.x-req: "yes", i.h.x-cfg: "yes"}}
+
+- name: config + rule + request three-way merge
+  rules:
+    - match: {g: /merge}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"g": "mx!/merge", "h": {"X-Req": "req"}, "1": "b"}'
+  config: '{h: {X-Cfg: "cfg"}, rules: [{match: {u: "**merge**"}, h: {X-Rule: "rule"}}]}'
+  assert:
+    stdout: {json: {i.h.x-cfg: "cfg", i.h.x-rule: "rule", i.h.x-req: "req"}}
+
+# === Rules ===
+
+- name: rule URL glob match injects header
+  rules:
+    - match: {g: /api/data}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{g: mx!/api/data, 1: b}"
+  config: '{rules: [{match: {u: "**api/data**"}, h: {X-Rule: yes}}]}'
+  assert:
+    stdout: {json: {i.h.x-rule: "yes"}}
+
+- name: rule method match sets content-type
+  rules:
+    - match: {p: /rule}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{p: mx!/rule, b: {x: 1}, 1: b}"
+  config: '{rules: [{match: {m: POST}, h: {c!: j!}}]}'
+  assert:
+    stdout: {json: {i.h.content-type: "application/json"}}
+
+- name: rule metadata match injects header
+  rules:
+    - match: {g: /rule}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{g: mx!/rule, md: {env: prod}, 1: b}"
+  config: '{rules: [{match: {md.env: prod}, h: {X-Env: production}}]}'
+  assert:
+    stdout: {json: {i.h.x-env: "production"}}
+
+- name: rule with multiple match criteria (AND)
+  rules:
+    - match: {p: /and}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: '{"p": "mx!/and", "md": {"tier": "premium"}, "b": {}, "1": "b"}'
+  config: '{rules: [{match: {m: POST, md.tier: premium}, h: {X-Both: matched}}]}'
+  assert:
+    stdout: {json: {i.h.x-both: "matched"}}
+
+# === Query params ===
+
+- name: query params via q object
+  rules:
+    - match: {g: /q}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/q", "q": {"foo": "bar"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.foo: "bar"}}
+
+- name: query params in URL string
+  rules:
+    - match: {g: /q}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/q?foo=bar", "1": "b"}'
+  assert:
+    stdout: {json: {i.q.foo: "bar"}}
+
+# === Request atoms in output ===
+
+- name: method atom
+  rules:
+    - match: {g: /atoms}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/atoms", "1": "j(m)"}'
+  assert:
+    stdout: {json: {m: "GET"}}
+
+- name: full URL atom
+  rules:
+    - match: {g: /atoms}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/atoms", "1": "j(u)"}'
+  assert:
+    stdout: {contains: ["/atoms", "http"]}
+
+- name: request body atom i.b
+  rules:
+    - match: {p: /atoms}
+      reply: {s: 200, b: ok}
+  input: '{"p": "mx!/atoms", "b": {"sent": true}, "1": "j(i.b)"}'
+  assert:
+    stdout: {contains: ["sent"]}
+
+- name: request headers atom i.h
+  rules:
+    - match: {g: /atoms}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/atoms", "h": {"X-Test": "yes"}, "1": "j(i.h)"}'
+  assert:
+    stdout: {contains: ["X-Test", "yes"]}
+
+- name: URL scheme atom
+  rules:
+    - match: {g: /uatom}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/uatom", "1": "j(u.scheme)"}'
+  assert:
+    stdout: {json: {u.scheme: "http"}}
+
+- name: URL host atom
+  rules:
+    - match: {g: /uatom}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/uatom", "1": "j(u.host)"}'
+  assert:
+    stdout: {contains: ["127.0.0.1"]}
+
+- name: URL path atom
+  rules:
+    - match: {g: /uatom}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/uatom", "1": "j(u.path)"}'
+  assert:
+    stdout: {json: {u.path: "uatom"}}
+
+- name: URL port atom
+  rules:
+    - match: {g: /uatom}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/uatom", "1": "j(u.port)"}'
+  assert:
+    stdout: {contains: ["u"]}
+
+- name: URL query atom
+  rules:
+    - match: {g: /uatom}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/uatom?foo=bar", "1": "j(u.query)"}'
+  assert:
+    stdout: {contains: ["foo=bar"]}
+
+- name: o.b alias for body
+  rules:
+    - match: {g: /alias}
+      reply: {s: 200, h: {ct!: j!}, b: {x: 1}}
+  input: '{"g": "mx!/alias", "1": "j(o.b)"}'
+  assert:
+    stdout: {contains: ['"x"']}
+
+- name: o.h alias for headers
+  rules:
+    - match: {g: /alias}
+      reply: {s: 200, h: {X-Custom: yes}, b: ok}
+  input: '{"g": "mx!/alias", "1": "j(o.h)"}'
+  assert:
+    stdout: {contains: ["x-custom"]}
+
+- name: o.s alias for status line
+  rules:
+    - match: {g: /alias}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/alias", "1": "j(o.s)"}'
+  assert:
+    stdout: {contains: ["200 OK"]}
+
+# === YAML input ===
+
+- name: YAML flow with unquoted keys
+  rules:
+    - match: {g: /yaml}
+      reply: {s: 200, b: ok}
+  input: "{g: mx!/yaml, 1: s}"
+  assert:
+    stdout: "HTTP/1.1 200 OK"
+
+- name: YAML multi-line input
+  rules:
+    - match: {g: /yaml}
+      reply: {s: 200, b: yaml-ok}
+  input: "g: mx!/yaml\n1: b"
+  assert:
+    stdout: "yaml-ok"
+
+- name: YAML multi-document separated by ---
+  rules:
+    - match: {g: /y1}
+      reply: {s: 200, b: first}
+    - match: {g: /y2}
+      reply: {s: 200, b: second}
+  input: "g: mx!/y1\n1: b\n---\ng: mx!/y2\n1: b"
+  assert:
+    stdout: "firstsecond"
+
+- name: JSONL batch with idx
+  rules:
+    - match: {g: /idx}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/idx", "1": "j(idx s.code)"}\n{"g": "mx!/idx", "1": "j(idx s.code)"}'
+  assert:
+    stdout: {contains: ['"idx"', "200"]}

@@ -1,0 +1,141 @@
+# Edge cases and boundary conditions
+
+# === Input parsing ===
+
+- name: YAML separator with blank lines between docs
+  rules:
+    - match: {g: /y1}
+      reply: {s: 200, b: first}
+    - match: {g: /y2}
+      reply: {s: 200, b: second}
+  input: "g: mx!/y1\n1: b\n\n---\n\ng: mx!/y2\n1: b"
+  assert:
+    stdout: "firstsecond"
+
+- name: single request batch
+  rules:
+    - match: {g: /single}
+      reply: {s: 200, b: only}
+  input: '{"g": "mx!/single", "1": "b"}'
+  assert:
+    stdout: "only"
+
+- name: input with leading blank lines
+  rules:
+    - match: {g: /lead}
+      reply: {s: 200, b: ok}
+  input: '\n\n{"g": "mx!/lead", "1": "b"}'
+  assert:
+    stdout: "ok"
+
+- name: YAML doc that is just a scalar
+  input: "hello"
+  assert:
+    exit_code: 1
+
+- name: duplicate --- separators (empty doc skipped)
+  rules:
+    - match: {g: /sep}
+      reply: {s: 200, b: ok}
+  input: "g: mx!/sep\n1: b\n---\n---"
+  assert:
+    stdout: "ok"
+
+# === Empty and null values ===
+
+- name: POST with empty body
+  rules:
+    - match: {p: /empty}
+      reply: {s: 200, b: ok}
+  input: '{"p": "mx!/empty", "1": "b"}'
+  assert:
+    stdout: "ok"
+
+- name: empty headers object
+  rules:
+    - match: {g: /eh}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/eh", "h": {}, "1": "b"}'
+  assert:
+    stdout: "ok"
+
+- name: empty query params object
+  rules:
+    - match: {g: /eq}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/eq", "q": {}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q: {}}}
+
+- name: empty metadata string
+  rules:
+    - match: {g: /emd}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/emd", "md": "", "1": "j(md)"}'
+  assert:
+    stdout: {json: {md: ""}}
+
+# === Config and rules ===
+
+- name: config with empty rules array
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: ok}
+  input: "{g: mx!/cfg, 1: b}"
+  config: '{rules: []}'
+  assert:
+    stdout: "ok"
+
+- name: API alias trailing slash normalization
+  rules:
+    - match: {g: /path}
+      reply: {s: 200, b: ok}
+  input: "{g: api!/path, 1: b}"
+  config: "{api: mx!}"
+  assert:
+    stdout: "ok"
+
+- name: rule method match is case insensitive
+  rules:
+    - match: {p: /ci}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  input: "{p: mx!/ci, b: {}, 1: b}"
+  config: '{rules: [{match: {m: post}, h: {X-Matched: yes}}]}'
+  assert:
+    stdout: {json: {i.h.x-matched: "yes"}}
+
+# === Unicode and special characters ===
+
+- name: unicode in request and response body
+  rules:
+    - match: {p: /uni}
+      reply: {s: 200, h: {ct!: j!}, b: {emoji: "🎉"}}
+  input: '{"p": "mx!/uni", "b": {"city": "München"}, "1": "b"}'
+  assert:
+    stdout: {contains: ["🎉"]}
+
+- name: query params with special characters
+  rules:
+    - match: {g: /q}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/q", "q": {"key": "a b&c"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.key: "a b&c"}}
+
+# === Output atom edge cases ===
+
+- name: all major atoms in one output
+  rules:
+    - match: {g: /all}
+      reply: {s: 200, h: {ct!: j!}, b: {data: 1}}
+  input: '{"g": "mx!/all", "md": "tag", "1": "j(idx m s.code md)"}'
+  assert:
+    stdout: {json: {idx: 0, m: "GET", s.c: 200, md: "tag"}}
+
+- name: i.b for GET with no body
+  rules:
+    - match: {g: /nob}
+      reply: {s: 200, b: ok}
+  input: '{"g": "mx!/nob", "1": "j(i.b)"}'
+  assert:
+    stdout: {contains: ["i.b"]}
