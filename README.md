@@ -226,9 +226,55 @@ Application-level caching (not HTTP-compliant). Does not respect `Cache-Control`
 
 `progress: true` (spinner) or `progress: N` (progress bar). Suppresses stderr output; shows suppressed count.
 
-### Step mode
+### Interactive mode
 
-`--step` flag for interactive debugging of piped requests. `--ref` prints a reference card. See [Guide](docs/guide.md#step-mode) for full walkthrough.
+yurl enters interactive mode when stdin is a terminal. Type requests directly, use `.x` to inspect, `.c` to manage config.
+
+#### Commands
+
+| Command | Description |
+|---|---|
+| `{request}` | send a JSON/YAML request |
+| `.c` | show config; `.c {cfg}` to replace |
+| `.t` | show request templates |
+| `.ref` / `.r` | show reference card (`--ref` from CLI) |
+| `.help x` | detailed `.x` flag reference |
+| `.help` / `.h` | show help |
+
+#### `.x` — expand and inspect
+
+`.x [flags] {request}` — resolve a request with optional flags. Horizontal output pre-fills the prompt for editing. Vertical and curl output prints.
+
+| Flag | Effect | Default |
+|---|---|---|
+| `m` | merged — apply config headers and rules | unmerged |
+| `v` | vertical — multiline output | horizontal |
+| `j` | JSON format | YAML |
+| `c` | curl format | YAML |
+| `s` | short — collapse headers to yttp shortcuts | standard |
+
+Flags compose: `.x mv {req}` = merged vertical YAML, `.x vc {req}` = multiline curl.
+
+```
+> .x {g: api!/toys}
+> {get: https://api.example.com/toys}
+
+> .x m {g: api!/toys}
+> {get: https://api.example.com/toys, h: {Authorization: Bearer tok}}
+
+> .x vc {g: api!/toys}
+curl -X GET 'https://api.example.com/toys' \
+  -H 'Authorization: Bearer tok'
+```
+
+#### Step mode
+
+`--step` flag for interactive debugging of piped requests. See [Guide](docs/guide.md#step-mode) for full walkthrough.
+
+| Command | Description |
+|---|---|
+| `.next` / `.n` | load next piped request, edit, Enter to send |
+| `.go` / `.g` | run all remaining, Ctrl-C to stop |
 
 ```
 $ echo '
@@ -239,9 +285,6 @@ $ echo '
 
 yurl v0.6.1
 
-> .c
-  config: api: api | h: 1 header | output: 1
-
 > .next                              # pre-fills with {g: api!/toys}
 > .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
 > {get: http://localhost:3000/toys, h: {Authorization: Bearer tok}, 1: j(s b)}
@@ -251,26 +294,4 @@ yurl v0.6.1
 {"s":"200 OK","b":{"id":1,"name":"Fox","price":12.99}}
 {"s":"201 Created","b":{"id":3,"name":"Owl"}}
   2 requests executed
-
-> .c {api: {s: staging.example.com}}
-  config: api: s
-
-> {g: s!/toys}                       # ad-hoc request with new config
-{"s":"200 OK","b":[...]}
 ```
-
-| Command | Description |
-|---|---|
-| `.next` / `.n` | load next piped request, edit, Enter to send |
-| `.go` / `.g` | run all remaining, Ctrl-C to stop |
-| `.x {req}` | expand and edit (horizontal YAML, unmerged) |
-| `.x m {req}` | expand with merged config headers/rules |
-| `.x v {req}` | expand as vertical (multiline) YAML |
-| `.x c {req}` | expand as curl command |
-| `.x j {req}` | expand as JSON |
-| `.x ms {req}` | merged + short headers (yttp shortcuts) |
-| `.c` | show config; `.c {cfg}` to replace |
-| `.t` | show request templates |
-| `.ref` / `.r` | show reference card |
-| `.help x` | detailed `.x` flag reference |
-| `.help` / `.h` | show help |
