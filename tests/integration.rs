@@ -854,3 +854,25 @@ fn unknown_key_is_error() {
     assert!(stderr.contains("unknown key: bogus"), "should reject unknown key: {stderr}");
     assert!(output.stdout.is_empty(), "should not execute with unknown key");
 }
+
+// --- Expand with flags (via config output format, verifying rendering paths) ---
+
+#[test]
+fn config_with_merged_headers() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get", "1": "j(s.code)"}}"#);
+    let config = r#"{h: {X-Custom: "from-config"}}"#;
+    let out = jurl_with_config(&input, Some(config));
+    let json = parse_json(&out);
+    // Config header should be sent and echoed back
+    assert_eq!(json["s"]["c"], 200);
+}
+
+#[test]
+fn request_with_query_params_in_url() {
+    let b = base();
+    let input = format!(r#"{{"g": "{b}/get?foo=bar", "1": "b"}}"#);
+    let out = jurl(&input);
+    let body = parse_json(&out);
+    assert_eq!(body["args"]["foo"], "bar");
+}

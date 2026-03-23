@@ -1550,6 +1550,38 @@ mod tests {
     }
 
     #[test]
+    fn expand_short_ignored_with_curl() {
+        let config_json = parse_input(r#"{"h": {"Authorization": "Bearer tok"}}"#).unwrap();
+        let config = Config::parse(&config_json);
+        let flags = ExpandFlags { merged: true, curl: true, short: true, ..Default::default() };
+        let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
+        // curl output should use full headers, not shortcuts
+        assert!(result.contains("Authorization"), "curl should not shorten headers: {result}");
+        assert!(!result.contains("a!"), "curl should not use shortcuts: {result}");
+    }
+
+    #[test]
+    fn expand_vertical_yaml_multiline() {
+        let config = Config::empty();
+        let flags = ExpandFlags { vertical: true, ..Default::default() };
+        let result = expand_with_flags(
+            r#"{"g": "https://example.com", "h": {"Accept": "j!"}}"#, &config, &flags
+        ).unwrap();
+        assert!(result.contains('\n'), "vertical should be multiline: {result}");
+        assert!(result.contains("get:"), "should contain method: {result}");
+        assert!(result.contains("Accept:"), "should contain header: {result}");
+    }
+
+    #[test]
+    fn expand_horizontal_yaml_single_line() {
+        let config = Config::empty();
+        let result = expand_with_flags(
+            r#"{"g": "https://example.com"}"#, &config, &ExpandFlags::default()
+        ).unwrap();
+        assert!(!result.contains('\n'), "horizontal should be single line: {result}");
+    }
+
+    #[test]
     fn expand_request_parse_error() {
         let config = Config::empty();
         let result = expand_merged("{broken", &config);
