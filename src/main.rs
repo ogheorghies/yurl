@@ -898,7 +898,7 @@ impl<R: BufRead> StdinReader<R> {
         }
     }
 
-    fn next(&mut self) -> Option<String> {
+    fn next(&mut self) -> Option<Result<String, RequestError>> {
         if self.done {
             return None;
         }
@@ -925,8 +925,8 @@ impl<R: BufRead> StdinReader<R> {
                     if self.is_yaml == Some(true) {
                         // YAML: accumulate until `---` separator
                         if trimmed == "---" {
-                            if let Some(doc) = self.flush_yaml_buf() {
-                                return Some(doc);
+                            if let Some(result) = self.flush_yaml_buf() {
+                                return Some(result);
                             }
                             // empty doc between separators, keep reading
                         } else {
@@ -935,7 +935,7 @@ impl<R: BufRead> StdinReader<R> {
                     } else {
                         // JSONL: yield each non-empty line
                         if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
+                            return Some(Ok(trimmed.to_string()));
                         }
                     }
                 }
@@ -947,15 +947,30 @@ impl<R: BufRead> StdinReader<R> {
         }
     }
 
-    fn flush_yaml_buf(&mut self) -> Option<String> {
+    fn flush_yaml_buf(&mut self) -> Option<Result<String, RequestError>> {
         let trimmed = self.buf.trim();
         if trimmed.is_empty() {
             return None;
         }
-        let val: Value = serde_yml::from_str(trimmed).unwrap();
+        let val: Value = match serde_yml::from_str(trimmed) {
+            Ok(v) => v,
+            Err(e) => {
+                let (line, column) = e.location()
+                    .map(|loc| (Some(loc.line()), Some(loc.column())))
+                    .unwrap_or((None, None));
+                let err = RequestError::Parse {
+                    input: self.buf.trim().to_string(),
+                    line,
+                    column,
+                    msg: format!("invalid YAML: {e}"),
+                };
+                self.buf.clear();
+                return Some(Err(err));
+            }
+        };
         let json = serde_json::to_string(&val).unwrap();
         self.buf.clear();
-        Some(json)
+        Some(Ok(json))
     }
 }
 
@@ -1145,8 +1160,11 @@ async fn main() {
             let stdin = io::stdin().lock();
             let mut reader = StdinReader::new(stdin);
             let mut queue = std::collections::VecDeque::new();
-            while let Some(line) = reader.next() {
-                queue.push_back(line);
+            while let Some(result) = reader.next() {
+                match result {
+                    Ok(line) => queue.push_back(line),
+                    Err(e) => eprintln!("{}", e.display_colored()),
+                }
             }
             Some(queue)
         } else {
@@ -1220,7 +1238,14 @@ async fn main() {
         let reader_handle = std::thread::spawn(move || {
             let stdin = io::stdin().lock();
             let mut reader = StdinReader::new(stdin);
-            while let Some(line) = reader.next() {
+            while let Some(result) = reader.next() {
+                let line = match result {
+                    Ok(line) => line,
+                    Err(e) => {
+                        eprintln!("{}", e.display_colored());
+                        std::process::exit(1);
+                    }
+                };
                 let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
                 if tx.blocking_send((idx, line)).is_err() {
                     break; // receiver dropped

@@ -876,3 +876,27 @@ fn request_with_query_params_in_url() {
     let body = parse_json(&out);
     assert_eq!(body["args"]["foo"], "bar");
 }
+
+// --- Invalid YAML handling (no panic) ---
+
+#[test]
+fn invalid_yaml_batch_fails() {
+    let input = "key: value: bad";
+    let output = jurl_full(input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid YAML"), "should show YAML error: {stderr}");
+    assert!(!stderr.contains("panicked"), "should not panic: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on YAML syntax error");
+}
+
+#[test]
+fn invalid_yaml_batch_fails_before_subsequent_docs() {
+    let b = base();
+    let input = format!("key: value: bad\n---\ng: {b}/get\n1: s");
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid YAML"), "should show YAML error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on YAML syntax error");
+    assert!(stdout.is_empty(), "should not process requests after syntax error: {stdout}");
+}
