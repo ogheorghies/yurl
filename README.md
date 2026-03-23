@@ -287,7 +287,7 @@ $ echo '
 yurl v0.9.0
 
 > .next                              # pre-fills with {g: api!/toys}
-> .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
+> .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged
 > {get: http://localhost:3000/toys, h: {Authorization: Bearer tok}, 1: j(s b)}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}
 
