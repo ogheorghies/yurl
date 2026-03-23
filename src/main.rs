@@ -933,8 +933,17 @@ impl<R: BufRead> StdinReader<R> {
                             self.buf.push_str(&line);
                         }
                     } else {
-                        // JSONL: yield each non-empty line
+                        // JSONL: yield each non-empty line, validate JSON syntax
                         if !trimmed.is_empty() {
+                            if let Err(e) = serde_json::from_str::<Value>(trimmed) {
+                                let err = RequestError::Parse {
+                                    input: trimmed.to_string(),
+                                    line: Some(e.line()),
+                                    column: Some(e.column()),
+                                    msg: format!("invalid JSON: {e}"),
+                                };
+                                return Some(Err(err));
+                            }
                             return Some(Ok(trimmed.to_string()));
                         }
                     }

@@ -744,16 +744,14 @@ fn query_params_absent_noop() {
 // --- Error handling ---
 
 #[test]
-fn invalid_json_prints_error_continues() {
+fn invalid_json_batch_fails() {
     let b = base();
-    // First request is invalid, second is valid
+    // First request is invalid JSON syntax, second is valid
     let input = format!("{{broken\n{{\"g\": \"{b}/get\", \"1\": \"b\"}}");
     let output = jurl_full(&input, None);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid") || stderr.contains("^"), "stderr should show error: {stderr}");
-    // Second request should still succeed
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.is_empty(), "valid request should produce output");
+    assert!(stderr.contains("invalid JSON"), "stderr should show JSON error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on JSON syntax error");
 }
 
 #[test]
@@ -810,13 +808,14 @@ fn space_separated_format_atoms() {
 }
 
 #[test]
-fn yaml_flow_error_not_json_error() {
-    // YAML flow input with unquoted keys should get a YAML error, not JSON
+fn curly_brace_input_detected_as_json() {
+    // Input starting with { is auto-detected as JSONL, even if it looks like YAML flow.
+    // Syntax validation catches it as invalid JSON.
     let input = "{g: google.com, adad:}";
     let output = jurl_full(input, None);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("invalid JSON"), "should show YAML error for YAML input: {stderr}");
-    assert!(stderr.contains("invalid YAML") || stderr.contains("YAML"), "should mention YAML: {stderr}");
+    assert!(stderr.contains("invalid JSON"), "should show JSON syntax error: {stderr}");
+    assert!(!output.status.success(), "should exit non-zero");
 }
 
 #[test]
@@ -828,9 +827,9 @@ fn url_not_string_prints_error() {
 }
 
 #[test]
-fn error_in_batch_continues_processing() {
+fn syntax_error_in_json_batch_stops_before_subsequent() {
     let b = base();
-    // Three requests: valid, invalid, valid
+    // Three requests: valid, syntax error, valid — batch should stop at the syntax error
     let input = format!(
         r#"{{"g": "{b}/get", "1": "s"}}
 {{broken
@@ -839,10 +838,27 @@ fn error_in_batch_continues_processing() {
     let output = jurl_full(&input, None);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Both valid requests should produce output
-    assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed. stdout: {stdout}");
-    // Invalid request should produce error
-    assert!(stderr.contains("invalid") || stderr.contains("^"), "should show error for invalid request: {stderr}");
+    assert!(stderr.contains("invalid JSON"), "should show JSON syntax error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero");
+    // First valid request may or may not have completed (it was sent before the error),
+    // but the third request should not execute
+    assert!(stdout.matches("200").count() <= 1, "should not process requests after syntax error: {stdout}");
+}
+
+#[test]
+fn content_error_in_json_batch_continues() {
+    let b = base();
+    // Content errors (valid JSON, bad request) should continue
+    let input = format!(
+        r#"{{"g": "{b}/get", "1": "s"}}
+{{"g": {{"nested": true}}}}
+{{"g": "{b}/get", "1": "s"}}"#
+    );
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must be a string"), "should show content error: {stderr}");
+    assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed: {stdout}");
 }
 
 #[test]
@@ -899,4 +915,26 @@ fn invalid_yaml_batch_fails_before_subsequent_docs() {
     assert!(stderr.contains("invalid YAML"), "should show YAML error: {stderr}");
     assert!(!output.status.success(), "batch should exit non-zero on YAML syntax error");
     assert!(stdout.is_empty(), "should not process requests after syntax error: {stdout}");
+}
+
+#[test]
+fn yaml_content_error_missing_method() {
+    // Valid YAML, but no HTTP method — content error, not syntax error
+    let input = "foo: bar";
+    let output = jurl_full(input, None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("invalid YAML"), "should not be a YAML syntax error: {stderr}");
+    assert!(stderr.contains("error"), "should show a content error: {stderr}");
+}
+
+#[test]
+fn yaml_content_error_in_batch_continues() {
+    let b = base();
+    // First doc: valid request. Second doc: valid YAML, bad request (no method). Third: valid.
+    let input = format!("g: {b}/get\n1: s\n---\nfoo: bar\n---\ng: {b}/get\n1: s");
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("error"), "should show content error: {stderr}");
+    assert_eq!(stdout.matches("200").count(), 2, "both valid requests should succeed: {stdout}");
 }
