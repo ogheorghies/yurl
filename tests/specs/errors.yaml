@@ -129,3 +129,21 @@
   input: ""
   assert:
     exit_code: 0
+
+# === Positional arg validation ===
+
+- name: config after request is error
+  positional:
+    - "{g: http://example.com}"
+    - "{h: {a!: tok}}"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["config must come before requests"]}
+
+- name: multiple configs is error
+  positional:
+    - "{h: {a!: tok}}"
+    - "{api: example.com}"
+  assert:
+    exit_code: 1
+    stderr: {contains: ["only one config argument allowed"]}

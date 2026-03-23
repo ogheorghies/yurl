@@ -8,7 +8,7 @@ Built on [`yttp`](https://crates.io/crates/yttp), the ["Better HTTP"](#yttp--req
 Install: `cargo install yurl`
 
 ```bash
-echo '{g: https://jsonplaceholder.typicode.com/posts/1}' | yurl
+yurl '{g: https://jsonplaceholder.typicode.com/posts/1}'
 ```
 ```yaml
 s: {v: HTTP/1.1, c: 200, t: OK}
@@ -19,13 +19,19 @@ b:
   title: sunt aut facere...
 ```
 
-Batch with API aliases, auth from env, JSON output:
+Multiple requests with config:
 
 ```bash
-echo '
+yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s b)"}' '
 {g: api!/get}
 {p: api!/post, b: {name: Owl, price: 5.99}}
-' | yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s b)"}'
+'
+```
+
+Or pipe from stdin for large batches:
+
+```bash
+cat requests.yaml | yurl '{api: httpbin.org, h: {a!: $TOKEN}}'
 ```
 
 ## Reference
@@ -99,7 +105,15 @@ rules:
 
 ## Request
 
-Reads from stdin as JSONL (one per line) or YAML (`---` separated). Streaming — requests execute before EOF.
+Requests can be passed as positional CLI arguments or piped via stdin. Args and config are auto-detected: any arg with a method key (`g`, `p`, `put`, etc.) is a request; everything else is config. Config must be first.
+
+```bash
+yurl '{g: example.com}'                              # single request
+yurl '{h: {a!: tok}}' '{g: example.com}'              # config + request
+cat batch.yaml | yurl '{h: {a!: tok}}'                # stdin + config
+```
+
+Stdin reads JSONL (one per line) or YAML (`---` separated). Streaming — requests execute before EOF.
 
 | Key | Description |
 |-----|-------------|

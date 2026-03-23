@@ -66,9 +66,13 @@ struct Spec {
     name: String,
     #[serde(default)]
     rules: Vec<serde_json::Value>,
+    #[serde(default)]
     input: String,
     #[serde(default)]
     config: Option<String>,
+    /// Positional CLI args (config and/or requests). When present, input is ignored.
+    #[serde(default)]
+    positional: Vec<String>,
     #[serde(default = "default_bin")]
     bin: String,
     #[serde(default)]
@@ -171,17 +175,29 @@ fn run_spec(spec: &Spec, base: &str) {
         setup_rules(base, &[]);
     }
 
-    let input = resolve_mx(&spec.input, base);
-
     let bin_exe = match spec.bin.as_str() {
         "yurl" => env!("CARGO_BIN_EXE_yurl"),
         _ => env!("CARGO_BIN_EXE_jurl"),
     };
 
     let mut cmd = Command::new(bin_exe);
-    if let Some(ref cfg) = spec.config {
+
+    if !spec.positional.is_empty() {
+        // Positional args mode — config and requests as CLI args
+        for arg in &spec.positional {
+            cmd.arg(resolve_mx(arg, base));
+        }
+        // Also pass legacy config if present
+        if let Some(ref cfg) = spec.config {
+            // Insert config as first arg (before positional)
+            // Actually, config is part of positional now — but allow both for transition
+            cmd.arg(resolve_mx(cfg, base));
+        }
+    } else if let Some(ref cfg) = spec.config {
         cmd.arg(resolve_mx(cfg, base));
     }
+
+    let input = resolve_mx(&spec.input, base);
 
     let output = cmd
         .stdin(std::process::Stdio::piped())

@@ -573,3 +573,71 @@
   input: '{"g": "mx!/idx", "1": "j(idx s.code)"}\n{"g": "mx!/idx", "1": "j(idx s.code)"}'
   assert:
     stdout: {contains: ['"idx"', "200"]}
+
+# === Positional args ===
+
+- name: single request as positional arg
+  rules:
+    - match: {g: /pos}
+      reply: {s: 200, b: positional-ok}
+  positional:
+    - "{g: mx!/pos, 1: b}"
+  assert:
+    stdout: "positional-ok"
+
+- name: multiple requests as positional args
+  rules:
+    - match: {g: /pos1}
+      reply: {s: 200, b: first}
+    - match: {g: /pos2}
+      reply: {s: 200, b: second}
+  positional:
+    - "{g: mx!/pos1, 1: b}"
+    - "{g: mx!/pos2, 1: b}"
+  assert:
+    stdout: {contains: ["first", "second"]}
+
+- name: config + request as positional args
+  rules:
+    - match: {g: /pos}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  positional:
+    - "{h: {X-Cfg: yes}}"
+    - "{g: mx!/pos, 1: b}"
+  assert:
+    stdout: {json: {i.h.x-cfg: "yes"}}
+
+- name: multi-line YAML flow in single positional arg
+  rules:
+    - match: {g: /ml1}
+      reply: {s: 200, b: first}
+    - match: {g: /ml2}
+      reply: {s: 200, b: second}
+  positional:
+    - "{g: mx!/ml1, 1: b}\n{g: mx!/ml2, 1: b}"
+  assert:
+    stdout: {contains: ["first", "second"]}
+
+- name: multi-line JSONL in single positional arg
+  rules:
+    - match: {g: /jl1}
+      reply: {s: 200, b: first}
+    - match: {g: /jl2}
+      reply: {s: 200, b: second}
+  positional:
+    - '{"g": "mx!/jl1", "1": "b"}\n{"g": "mx!/jl2", "1": "b"}'
+  assert:
+    stdout: {contains: ["first", "second"]}
+
+- name: config + multiple requests as positional args
+  rules:
+    - match: {g: /pos1}
+      reply: {s: 200, b: a}
+    - match: {g: /pos2}
+      reply: {s: 200, b: b}
+  positional:
+    - "{h: {X-Cfg: yes}}"
+    - "{g: mx!/pos1, 1: b}"
+    - "{g: mx!/pos2, 1: b}"
+  assert:
+    stdout: {contains: ["a", "b"]}

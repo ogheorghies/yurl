@@ -38,9 +38,73 @@ struct Args {
     #[argh(switch, long = "ref")]
     reference: bool,
 
-    /// batch config JSON (default headers, output format, rules)
+    /// config and/or request(s) — auto-detected by method keys
     #[argh(positional)]
-    config: Option<String>,
+    positional: Vec<String>,
+}
+
+/// Method keys that identify a positional arg as a request (not config).
+const METHOD_KEYS: &[&str] = &[
+    "g", "get", "p", "post", "d", "delete", "put", "patch",
+    "head", "options", "trace",
+];
+
+/// Check if a parsed JSON object contains any method key.
+fn has_method_key(val: &serde_json::Value) -> bool {
+    if let Some(obj) = val.as_object() {
+        obj.keys().any(|k| METHOD_KEYS.contains(&k.to_lowercase().as_str()))
+    } else {
+        false
+    }
+}
+
+/// Check if an arg looks like a request by examining its first non-blank line.
+/// Supports multi-line args (multiple JSONL lines or YAML docs in one arg).
+fn arg_is_request(arg: &str) -> bool {
+    let first_line = arg.lines().find(|l| !l.trim().is_empty());
+    match first_line {
+        Some(line) => {
+            let trimmed = line.trim();
+            // Try parsing the first line to check for method keys
+            if let Ok(parsed) = parse_input(trimmed) {
+                has_method_key(&parsed)
+            } else {
+                // Can't parse first line — treat as request (errors caught later)
+                true
+            }
+        }
+        None => false, // empty arg
+    }
+}
+
+/// Classify positional args into config (optional, first) and requests.
+/// Returns (config_string, request_strings) or exits on error.
+fn classify_args(positional: Vec<String>) -> (Option<String>, Vec<String>) {
+    if positional.is_empty() {
+        return (None, vec![]);
+    }
+
+    let mut config: Option<String> = None;
+    let mut requests: Vec<String> = Vec::new();
+
+    for arg in positional {
+        if arg_is_request(&arg) {
+            requests.push(arg);
+        } else {
+            // Config arg
+            if !requests.is_empty() {
+                eprintln!("  error: config must come before requests");
+                std::process::exit(1);
+            }
+            if config.is_some() {
+                eprintln!("  error: only one config argument allowed");
+                std::process::exit(1);
+            }
+            config = Some(arg);
+        }
+    }
+
+    (config, requests)
 }
 
 fn resolve_method(key: &str) -> Option<&'static str> {
@@ -997,7 +1061,10 @@ async fn main() {
     }
     let client = Client::new();
 
-    let config = match &args.config {
+    let (config_str, request_args) = classify_args(args.positional);
+    let has_request_args = !request_args.is_empty();
+
+    let config = match &config_str {
         Some(cfg_str) => {
             match parse_input(cfg_str) {
                 Ok(json) => Config::parse(&json),
@@ -1162,16 +1229,21 @@ async fn main() {
         })
     };
 
-    if io::stdin().is_terminal() || args.interactive {
+    if (io::stdin().is_terminal() && !has_request_args) || args.interactive {
         // Interactive mode — run REPL on a blocking thread, send lines via channel
-        // In -i mode with piped stdin, StdinReader is created on the REPL thread as a lazy source
-        let is_step = args.interactive && !io::stdin().is_terminal();
+        // Sources for .next/.go: request args, piped stdin, or none (ad-hoc only)
+        let has_piped_stdin = args.interactive && !io::stdin().is_terminal() && !has_request_args;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 
         let repl_config = Arc::clone(&config);
         let repl_handle = std::thread::spawn(move || {
-            let stdin_source: Option<interactive::StdinSource> = if is_step {
+            let stdin_source: Option<interactive::StdinSource> = if has_request_args {
+                // Request args as step source (supports multi-line per arg)
+                let combined = request_args.join("\n");
+                let mut reader = StdinReader::new(std::io::Cursor::new(combined));
+                Some(Box::new(move || reader.next()))
+            } else if has_piped_stdin {
                 let stdin = io::stdin().lock();
                 let mut reader = StdinReader::new(stdin);
                 Some(Box::new(move || reader.next()))
@@ -1229,9 +1301,7 @@ async fn main() {
 
         repl_handle.join().ok();
     } else {
-        // Pipe mode — streaming stdin with backpressure.
-        // Bounded channel capacity: sum of per-rule concurrency slots + global concurrency.
-        // This prevents head-of-line blocking when rules have different concurrency limits.
+        // Batch mode — request args or streaming stdin with backpressure.
         let pipe_cfg = config.load_full();
         let rule_slots: usize = pipe_cfg.rules.iter().filter_map(|r| r.concurrency).sum();
         let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
@@ -1239,23 +1309,45 @@ async fn main() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String)>(channel_capacity);
 
         let idx_counter_reader = Arc::clone(&idx_counter);
-        let reader_handle = std::thread::spawn(move || {
-            let stdin = io::stdin().lock();
-            let mut reader = StdinReader::new(stdin);
-            while let Some(result) = reader.next() {
-                let line = match result {
-                    Ok(line) => line,
-                    Err(e) => {
-                        eprintln!("{}", e.display_colored());
-                        std::process::exit(1);
+        let reader_handle = if has_request_args {
+            // Feed request args through StdinReader (supports multi-line JSONL/YAML per arg)
+            std::thread::spawn(move || {
+                let combined = request_args.join("\n");
+                let mut reader = StdinReader::new(std::io::Cursor::new(combined));
+                while let Some(result) = reader.next() {
+                    let line = match result {
+                        Ok(line) => line,
+                        Err(e) => {
+                            eprintln!("{}", e.display_colored());
+                            std::process::exit(1);
+                        }
+                    };
+                    let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
+                    if tx.blocking_send((idx, line)).is_err() {
+                        break;
                     }
-                };
-                let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
-                if tx.blocking_send((idx, line)).is_err() {
-                    break; // receiver dropped
                 }
-            }
-        });
+            })
+        } else {
+            // Read from stdin
+            std::thread::spawn(move || {
+                let stdin = io::stdin().lock();
+                let mut reader = StdinReader::new(stdin);
+                while let Some(result) = reader.next() {
+                    let line = match result {
+                        Ok(line) => line,
+                        Err(e) => {
+                            eprintln!("{}", e.display_colored());
+                            std::process::exit(1);
+                        }
+                    };
+                    let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
+                    if tx.blocking_send((idx, line)).is_err() {
+                        break;
+                    }
+                }
+            })
+        };
 
         let mut handles = Vec::new();
 
