@@ -263,12 +263,14 @@ yurl v0.6.1
 |---|---|
 | `.next` / `.n` | load next piped request, edit, Enter to send |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
-| `.x {req}` | expand wire-ready, edit, send (`.x w` explicit) |
-| `.x s {req}` | expand structured (q: and b: as objects), edit, send |
-| `.p {req}` | preview wire-ready as multiline YAML (`.p w` explicit) |
-| `.p s {req}` | preview structured as multiline YAML |
-| `.p c {req}` | preview as curl command |
+| `.x {req}` | expand, edit, send (horizontal YAML, unmerged) |
+| `.x m {req}` | expand with merged config headers/rules |
+| `.x v {req}` | expand as vertical (multiline) YAML |
+| `.x c {req}` | expand as curl command |
+| `.x j {req}` | expand as JSON |
+| `.x ms {req}` | merged + short headers (yttp shortcuts) |
 | `.c` | show config; `.c {cfg}` to replace |
 | `.t` | show request templates |
 | `.ref` / `.r` | show reference card |
+| `.help x` | detailed `.x` flag reference |
 | `.help` / `.h` | show help |

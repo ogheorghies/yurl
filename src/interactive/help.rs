@@ -81,34 +81,58 @@ pub fn help_text(history_path: &Option<String>, step_mode: bool) -> String {
         String::new()
     };
     format!("\n\
-  {{request}}       send a JSON/YAML request\n\
-  {x} {{req}}       expand, edit, send (default: wire-ready)\n\
-  {xw} {{req}}     expand wire-ready\n\
-  {xs} {{req}}     expand structured (q: and b: as objects)\n\
-  {p} {{req}}       preview (default: wire-ready multiline YAML)\n\
-  {pw} {{req}}     preview wire-ready\n\
-  {ps} {{req}}     preview structured\n\
-  {pc} {{req}}     preview as curl command\n\
-  {c}            show current config\n\
-  {c}  {{cfg}}     replace active config\n\
+  {{request}}            send a JSON/YAML request\n\
+  {x} {flags} {{req}}   expand — {help_x} for flag reference\n\
+  {c}               show current config\n\
+  {c}  {{cfg}}        replace active config\n\
 {step_cmds}\
-  {t}            show request templates\n\
-  {r}  {rdot}      show reference card\n\
-  {help}  {hdot}     show this help\n\
-  {ctrl_d}        exit\n\
+  {t}               show request templates\n\
+  {r}  {rdot}         show reference card\n\
+  {help}  {hdot}        show this help\n\
+  {ctrl_d}           exit\n\
 {history_line}\n",
         x = style(".x").bold(),
-        xw = style(".x w").bold(),
-        xs = style(".x s").bold(),
-        p = style(".p").bold(),
-        pw = style(".p w").bold(),
-        ps = style(".p s").bold(),
-        pc = style(".p c").bold(),
+        flags = style("[flags]").dim(),
+        help_x = style(".help x").bold(),
         c = style(".c").bold(),
         t = style(".t").bold(),
         r = style(".ref").bold(), rdot = style(".r").dim(),
         help = style(".help").bold(), hdot = style(".h").dim(),
         ctrl_d = style("Ctrl-D").bold(),
+    )
+}
+
+pub fn expand_help() -> String {
+    format!("\
+{title}
+
+  Flags (composable, any order):
+    {m}   merged — apply config headers and rules (default: base only)
+    {v}   vertical — multiline output
+    {j}   JSON format (default: YAML)
+    {c}   curl format
+    {s}   short — collapse headers to yttp shortcuts
+
+  Horizontal output pre-fills the prompt for editing.
+  Vertical and curl output prints to screen.
+
+  Examples:
+    .x {{req}}         horizontal YAML (edit)
+    .x v {{req}}       vertical YAML (print)
+    .x m {{req}}       merged horizontal YAML (edit)
+    .x mv {{req}}      merged vertical YAML (print)
+    .x j {{req}}       horizontal JSON (edit)
+    .x jv {{req}}      vertical JSON (print)
+    .x c {{req}}       single-line curl (print)
+    .x vc {{req}}      multiline curl (print)
+    .x ms {{req}}      merged, short headers (edit)
+    .x mvs {{req}}     merged, vertical, short (print)\n",
+        title = style(".x [flags] {request}").bold(),
+        m = style("m").bold(),
+        v = style("v").bold(),
+        j = style("j").bold(),
+        c = style("c").bold(),
+        s = style("s").bold(),
     )
 }
 

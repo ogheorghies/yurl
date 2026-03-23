@@ -117,13 +117,50 @@ fn parse_input(s: &str) -> Result<Value, RequestError> {
     yttp::parse(s).map_err(|e| RequestError::from_parse(s, e))
 }
 
-/// Parse a request line with config resolution, returning the resolved parts.
-/// Shared logic for both `expand_request` and `expand_request_structured`.
-fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
-    &'a str,                       // method
+/// Flags for the `.x` command — composable modifiers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExpandFlags {
+    pub merged: bool,    // m — merge config headers/rules
+    pub vertical: bool,  // v — multiline output
+    pub json: bool,      // j — JSON format
+    pub curl: bool,      // c — curl format
+    pub short: bool,     // s — collapse headers to yttp shortcuts
+}
+
+impl ExpandFlags {
+    /// Parse flags from a string like "mv", "jv", "mcs". Returns error for invalid flags.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut flags = ExpandFlags::default();
+        for ch in s.chars() {
+            match ch {
+                'm' => flags.merged = true,
+                'v' => flags.vertical = true,
+                'h' => flags.vertical = false, // explicit horizontal
+                'j' => flags.json = true,
+                'y' => flags.json = false, // explicit YAML
+                'c' => flags.curl = true,
+                's' => flags.short = true,
+                _ => return Err(format!("unknown flag: {ch} (valid: m v h j y c s)")),
+            }
+        }
+        if flags.curl && flags.json {
+            return Err("c and j are mutually exclusive".to_string());
+        }
+        Ok(flags)
+    }
+
+    /// Whether the output can be pre-filled for editing (single-line).
+    pub fn is_editable(&self) -> bool {
+        !self.vertical && !self.curl
+    }
+}
+
+/// Parse a request line, extracting fields. Does NOT resolve headers.
+fn parse_request_fields(line: &str, config: &Config) -> Result<(
+    &'static str,                  // method
     String,                        // url (with API alias expanded)
     Option<Value>,                 // query
-    Map<String, Value>,            // merged headers
+    Option<Value>,                 // req_headers (raw, unexpanded)
     Option<Value>,                 // body
     Option<Value>,                 // md
     Vec<(String, String)>,         // outputs
@@ -175,72 +212,60 @@ fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
 
     let method = method.unwrap_or("GET");
     let url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
-    // Resolve headers against full URL (before stripping query) for rule matching
-    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 
-    Ok((method, url, query, merged_headers, body, md, outputs))
+    Ok((method, url, query, req_headers, body, md, outputs))
 }
 
-/// Expand a request line with full config resolution: API aliases, header
-/// shortcuts, env vars, rule matching, header merging. Returns the resolved
-/// request as a YAML flow string with query params inlined in the URL.
-pub fn expand_request(line: &str, config: &Config) -> Result<String, RequestError> {
-    let (method, mut url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config)?;
-
-    yttp::append_query_to_url(&mut url, &query).ok();
-
-    let mut result = Map::new();
-    result.insert(method.to_lowercase(), Value::String(url));
-    if !merged_headers.is_empty() {
-        result.insert("h".to_string(), Value::Object(merged_headers));
-    }
-    if let Some(b) = body {
-        result.insert("b".to_string(), b);
-    }
-    if let Some(m) = md {
-        result.insert("md".to_string(), m);
-    }
-    for (k, v) in outputs {
-        result.insert(k, Value::String(v));
-    }
-    Ok(to_yaml_flow(&Value::Object(result)))
-}
-
-/// Expand a request with full config resolution, keeping query params and body
-/// in structured form. URL query string is extracted into `q:`, body is kept
-/// as a structured object when Content-Type implies structure (JSON, form, multipart).
-pub fn expand_request_structured(line: &str, config: &Config) -> Result<String, RequestError> {
-    let (method, url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config)?;
-
-    // Split URL into base (without query string) and extract query params
-    let mut query_obj = Map::new();
-    let base_url = if let Ok(parsed) = Url::parse(&url) {
-        for (k, v) in parsed.query_pairs() {
-            query_obj.insert(k.into_owned(), Value::String(v.into_owned()));
-        }
-        let mut base = parsed.clone();
-        base.set_query(None);
-        base.to_string()
+/// Resolve headers — base (request only) or merged (+ config defaults + rules).
+fn resolve_headers_for_expand(
+    config: &Config,
+    method: &str,
+    url: &str,
+    md: &Option<Value>,
+    req_headers: &Option<Value>,
+    merged: bool,
+) -> Map<String, Value> {
+    if merged {
+        config.resolve_headers(method, url, md, req_headers)
     } else {
-        url
-    };
-
-    // Merge query params from q: field
-    if let Some(Value::Object(q)) = query {
-        for (k, v) in q {
-            query_obj.insert(k, v);
+        // Base: only expand shortcuts in request's own headers
+        if let Some(Value::Object(h)) = req_headers {
+            let mut h = h.clone();
+            yttp::expand_headers(&mut h);
+            h
+        } else {
+            Map::new()
         }
     }
+}
 
-    let mut result = Map::new();
-    result.insert(method.to_lowercase(), Value::String(base_url));
-    if !query_obj.is_empty() {
-        result.insert("q".to_string(), Value::Object(query_obj));
+/// Unified expand function — resolves request and renders with given flags.
+pub fn expand_with_flags(line: &str, config: &Config, flags: &ExpandFlags) -> Result<String, RequestError> {
+    let (method, url, query, req_headers, body, md, outputs) =
+        parse_request_fields(line, config)?;
+
+    let mut headers = resolve_headers_for_expand(
+        config, method, &url, &md, &req_headers, flags.merged,
+    );
+
+    // Apply short headers if requested (not for curl)
+    if flags.short && !flags.curl {
+        yttp::collapse_headers(&mut headers);
     }
-    if !merged_headers.is_empty() {
-        result.insert("h".to_string(), Value::Object(merged_headers));
+
+    // Inline query into URL
+    let mut full_url = url;
+    yttp::append_query_to_url(&mut full_url, &query).ok();
+
+    if flags.curl {
+        return Ok(render_curl(method, &full_url, &headers, &body, flags.vertical));
+    }
+
+    // Build result object
+    let mut result = Map::new();
+    result.insert(method.to_lowercase(), Value::String(full_url));
+    if !headers.is_empty() {
+        result.insert("h".to_string(), Value::Object(headers));
     }
     if let Some(b) = body {
         result.insert("b".to_string(), b);
@@ -251,97 +276,61 @@ pub fn expand_request_structured(line: &str, config: &Config) -> Result<String, 
     for (k, v) in outputs {
         result.insert(k, Value::String(v));
     }
-    Ok(to_yaml_flow(&Value::Object(result)))
-}
 
-/// Preview a resolved request as multiline block YAML (wire-ready).
-pub fn preview_request_wire(line: &str, config: &Config) -> Result<String, RequestError> {
-    let (method, mut url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config)?;
-    yttp::append_query_to_url(&mut url, &query).ok();
-
-    let mut result = Map::new();
-    result.insert(method.to_lowercase(), Value::String(url));
-    if !merged_headers.is_empty() {
-        result.insert("h".to_string(), Value::Object(merged_headers));
-    }
-    if let Some(b) = body {
-        result.insert("b".to_string(), b);
-    }
-    if let Some(m) = md {
-        result.insert("md".to_string(), m);
-    }
-    for (k, v) in outputs {
-        result.insert(k, Value::String(v));
-    }
-    Ok(to_yaml_block(&Value::Object(result), 0))
-}
-
-/// Preview a resolved request as multiline block YAML (structured).
-pub fn preview_request_structured(line: &str, config: &Config) -> Result<String, RequestError> {
-    let (method, url, query, merged_headers, body, md, outputs) =
-        resolve_request(line, config)?;
-
-    let mut query_obj = Map::new();
-    let base_url = if let Ok(parsed) = Url::parse(&url) {
-        for (k, v) in parsed.query_pairs() {
-            query_obj.insert(k.into_owned(), Value::String(v.into_owned()));
+    if flags.json {
+        if flags.vertical {
+            Ok(serde_json::to_string_pretty(&Value::Object(result)).unwrap_or_default())
+        } else {
+            Ok(serde_json::to_string(&Value::Object(result)).unwrap_or_default())
         }
-        let mut base = parsed.clone();
-        base.set_query(None);
-        base.to_string()
+    } else if flags.vertical {
+        Ok(to_yaml_block(&Value::Object(result), 0))
     } else {
-        url
-    };
-    if let Some(Value::Object(q)) = query {
-        for (k, v) in q {
-            query_obj.insert(k, v);
-        }
+        Ok(to_yaml_flow(&Value::Object(result)))
     }
-
-    let mut result = Map::new();
-    result.insert(method.to_lowercase(), Value::String(base_url));
-    if !query_obj.is_empty() {
-        result.insert("q".to_string(), Value::Object(query_obj));
-    }
-    if !merged_headers.is_empty() {
-        result.insert("h".to_string(), Value::Object(merged_headers));
-    }
-    if let Some(b) = body {
-        result.insert("b".to_string(), b);
-    }
-    if let Some(m) = md {
-        result.insert("md".to_string(), m);
-    }
-    for (k, v) in outputs {
-        result.insert(k, Value::String(v));
-    }
-    Ok(to_yaml_block(&Value::Object(result), 0))
 }
 
-/// Preview a resolved request as a curl command.
-pub fn preview_request_curl(line: &str, config: &Config) -> Result<String, RequestError> {
-    let (method, mut url, query, merged_headers, body, _md, _outputs) =
-        resolve_request(line, config)?;
-    yttp::append_query_to_url(&mut url, &query).ok();
-
+fn render_curl(method: &str, url: &str, headers: &Map<String, Value>, body: &Option<Value>, vertical: bool) -> String {
     let mut parts = vec![format!("curl -X {method} '{url}'")];
-    for (k, v) in &merged_headers {
+    for (k, v) in headers {
         let v_str = match v {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        parts.push(format!("  -H '{k}: {v_str}'"));
+        parts.push(format!("-H '{k}: {v_str}'"));
     }
-    if let Some(b) = &body {
+    if let Some(b) = body {
         let body_str = match b {
             Value::String(s) => s.clone(),
             other => serde_json::to_string(other).unwrap_or_default(),
         };
-        parts.push(format!("  -d '{body_str}'"));
+        parts.push(format!("-d '{body_str}'"));
     }
-    Ok(parts.join(" \\\n"))
+    if vertical {
+        parts.join(" \\\n  ")
+    } else {
+        parts.join(" ")
+    }
 }
+
+/// Legacy resolve_request — used by execute(). Always merges config.
+fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
+    &'a str,                       // method
+    String,                        // url (with API alias expanded)
+    Option<Value>,                 // query
+    Map<String, Value>,            // merged headers
+    Option<Value>,                 // body
+    Option<Value>,                 // md
+    Vec<(String, String)>,         // outputs
+), RequestError> {
+    let (method, url, query, req_headers, body, md, outputs) =
+        parse_request_fields(line, config)?;
+    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
+    Ok((method, url, query, merged_headers, body, md, outputs))
+}
+
+// Old expand_request / expand_request_structured / preview_request_* functions
+// are replaced by expand_with_flags(). See ExpandFlags for the composable modifier system.
 
 /// Serialize a serde_json::Value as multiline block YAML.
 fn to_yaml_block(val: &Value, indent: usize) -> String {
@@ -1291,11 +1280,21 @@ async fn main() {
 mod tests {
     use super::*;
 
+    /// Helper: expand with merged flags (what old expand_request did).
+    fn expand_merged(line: &str, config: &Config) -> Result<String, RequestError> {
+        expand_with_flags(line, config, &ExpandFlags { merged: true, ..Default::default() })
+    }
+
+    /// Helper: expand with default flags (unmerged horizontal YAML).
+    fn expand_default(line: &str, config: &Config) -> Result<String, RequestError> {
+        expand_with_flags(line, config, &ExpandFlags::default())
+    }
+
     #[test]
     fn expand_request_api_alias_and_headers() {
         let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#).unwrap();
         let config = Config::parse(&config_json);
-        let result = expand_request(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config).unwrap();
+        let result = expand_merged(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config).unwrap();
         // Output is YAML flow style, round-trips through yttp::parse
         let parsed = yttp::parse(&result).unwrap();
         let obj = parsed.as_object().unwrap();
@@ -1310,7 +1309,7 @@ mod tests {
     #[test]
     fn expand_request_preserves_body_and_outputs() {
         let config = Config::empty();
-        let result = expand_request(
+        let result = expand_merged(
             r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s b)"}"#,
             &config,
         ).unwrap();
@@ -1328,7 +1327,7 @@ mod tests {
             r#"{"rules": [{"match": {"u": "**example**"}, "h": {"X-From-Rule": "yes"}}]}"#,
         ).unwrap();
         let config = Config::parse(&config_json);
-        let result = expand_request(r#"{"g": "https://example.com/api"}"#, &config).unwrap();
+        let result = expand_merged(r#"{"g": "https://example.com/api"}"#, &config).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let h = parsed.get("h").unwrap().as_object().unwrap();
         assert_eq!(h.get("X-From-Rule").unwrap(), "yes");
@@ -1359,7 +1358,7 @@ mod tests {
         let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
 
         // Initial state
-        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
+        let result = expand_merged(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
         assert!(result.contains("localhost:3000"));
         assert!(result.contains("X-Old"));
 
@@ -1368,7 +1367,7 @@ mod tests {
         config.store(Arc::new(Config::parse(&new_config_json)));
 
         // Verify new config is used
-        let result = expand_request(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
+        let result = expand_merged(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
         assert!(result.contains("example.com:8080"));
         assert!(result.contains("X-New"));
         assert!(!result.contains("X-Old"));
@@ -1377,7 +1376,7 @@ mod tests {
     #[test]
     fn expand_request_yaml_flow_format() {
         let config = Config::empty();
-        let result = expand_request(r#"{"g": "https://example.com"}"#, &config).unwrap();
+        let result = expand_merged(r#"{"g": "https://example.com"}"#, &config).unwrap();
         // Should be YAML flow style, not JSON — no quoted keys
         assert!(result.starts_with('{'));
         assert!(result.contains("get:"));
@@ -1431,7 +1430,7 @@ mod tests {
     #[test]
     fn expand_request_numeric_key_unquoted() {
         let config = Config::empty();
-        let result = expand_request(
+        let result = expand_merged(
             r#"{"g": "https://example.com", "1": "j(s b)"}"#,
             &config,
         ).unwrap();
@@ -1446,7 +1445,7 @@ mod tests {
     #[test]
     fn expand_request_query_params() {
         let config = Config::empty();
-        let result = expand_request(
+        let result = expand_merged(
             r#"{"g": "https://example.com/search", "q": {"term": "foo", "limit": 10}}"#,
             &config,
         ).unwrap();
@@ -1458,84 +1457,102 @@ mod tests {
         assert!(parsed.get("q").is_none());
     }
 
+    // --- ExpandFlags ---
+
     #[test]
-    fn structured_extracts_query_from_url() {
-        let config = Config::empty();
-        let result = expand_request_structured(
-            r#"{"g": "https://example.com/search?a=1&b=2"}"#,
-            &config,
-        ).unwrap();
-        let parsed = yttp::parse(&result).unwrap();
-        let url = parsed.get("get").unwrap().as_str().unwrap();
-        assert!(!url.contains('?'), "URL should have no query string: {url}");
-        assert_eq!(url, "https://example.com/search");
-        let q = parsed.get("q").unwrap().as_object().unwrap();
-        assert_eq!(q.get("a").unwrap(), "1");
-        assert_eq!(q.get("b").unwrap(), "2");
+    fn flags_parse_valid() {
+        let f = ExpandFlags::parse("mv").unwrap();
+        assert!(f.merged);
+        assert!(f.vertical);
+        assert!(!f.json);
     }
 
     #[test]
-    fn structured_merges_url_and_q_params() {
-        let config = Config::empty();
-        let result = expand_request_structured(
-            r#"{"g": "https://example.com/search?a=1", "q": {"b": 2}}"#,
-            &config,
-        ).unwrap();
-        let parsed = yttp::parse(&result).unwrap();
-        let url = parsed.get("get").unwrap().as_str().unwrap();
-        assert_eq!(url, "https://example.com/search");
-        let q = parsed.get("q").unwrap().as_object().unwrap();
-        assert_eq!(q.get("a").unwrap(), "1");
-        assert_eq!(q.get("b").unwrap().as_i64().unwrap(), 2);
+    fn flags_parse_order_independent() {
+        assert_eq!(ExpandFlags::parse("mv").unwrap(), ExpandFlags::parse("vm").unwrap());
     }
 
     #[test]
-    fn structured_no_query_no_q_key() {
-        let config = Config::empty();
-        let result = expand_request_structured(
-            r#"{"g": "https://example.com/path"}"#,
-            &config,
-        ).unwrap();
-        let parsed = yttp::parse(&result).unwrap();
-        assert!(parsed.get("q").is_none());
+    fn flags_parse_invalid() {
+        assert!(ExpandFlags::parse("z").is_err());
     }
 
     #[test]
-    fn structured_preserves_body_and_outputs() {
-        let config = Config::empty();
-        let result = expand_request_structured(
-            r#"{"p": "https://example.com", "b": {"name": "test"}, "1": "j(s b)"}"#,
-            &config,
-        ).unwrap();
-        let parsed = yttp::parse(&result).unwrap();
-        assert_eq!(
-            parsed.get("b").unwrap().as_object().unwrap().get("name").unwrap(),
-            "test"
-        );
-        assert_eq!(parsed.get("1").unwrap(), "j(s b)");
+    fn flags_mutually_exclusive() {
+        assert!(ExpandFlags::parse("jc").is_err());
     }
 
     #[test]
-    fn structured_round_trip() {
-        // Output of .xx should be valid yurl input
+    fn flags_editable() {
+        assert!(ExpandFlags::default().is_editable());
+        assert!(ExpandFlags::parse("m").unwrap().is_editable());
+        assert!(!ExpandFlags::parse("v").unwrap().is_editable());
+        assert!(!ExpandFlags::parse("c").unwrap().is_editable());
+    }
+
+    // --- expand_with_flags ---
+
+    #[test]
+    fn expand_json_horizontal() {
         let config = Config::empty();
-        let result = expand_request_structured(
-            r#"{"g": "https://example.com/search?term=foo", "q": {"limit": 10}, "h": {"X-Test": "1"}}"#,
-            &config,
+        let flags = ExpandFlags { json: true, ..Default::default() };
+        let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
+        assert!(result.contains("\"get\""), "should be JSON: {result}");
+    }
+
+    #[test]
+    fn expand_json_vertical() {
+        let config = Config::empty();
+        let flags = ExpandFlags { json: true, vertical: true, ..Default::default() };
+        let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
+        assert!(result.contains('\n'), "should be multiline: {result}");
+    }
+
+    #[test]
+    fn expand_curl_horizontal() {
+        let config = Config::empty();
+        let flags = ExpandFlags { curl: true, ..Default::default() };
+        let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
+        assert!(result.starts_with("curl"), "should be curl: {result}");
+        assert!(!result.contains('\\'), "horizontal curl should not have backslash: {result}");
+    }
+
+    #[test]
+    fn expand_curl_vertical() {
+        let config = Config::empty();
+        let flags = ExpandFlags { curl: true, vertical: true, ..Default::default() };
+        let result = expand_with_flags(
+            r#"{"g": "https://example.com", "h": {"Accept": "j!"}}"#, &config, &flags
         ).unwrap();
-        // Should parse without error
-        let parsed = yttp::parse(&result).unwrap();
-        assert!(parsed.is_object());
-        // Can be fed back into expand_request_structured
-        let result2 = expand_request_structured(&result, &config).unwrap();
-        let parsed2 = yttp::parse(&result2).unwrap();
-        assert_eq!(parsed, parsed2, "Should be idempotent");
+        assert!(result.contains('\\'), "vertical curl should have backslash: {result}");
+    }
+
+    #[test]
+    fn expand_base_vs_merged() {
+        let config_json = parse_input(r#"{"h": {"X-Config": "yes"}}"#).unwrap();
+        let config = Config::parse(&config_json);
+        // Base: no config headers
+        let base = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &ExpandFlags::default()).unwrap();
+        assert!(!base.contains("X-Config"), "base should not include config headers: {base}");
+        // Merged: config headers included
+        let merged = expand_merged(r#"{"g": "https://example.com"}"#, &config).unwrap();
+        assert!(merged.contains("X-Config"), "merged should include config headers: {merged}");
+    }
+
+    #[test]
+    fn expand_short_headers() {
+        let config_json = parse_input(r#"{"h": {"Authorization": "Bearer tok"}}"#).unwrap();
+        let config = Config::parse(&config_json);
+        let flags = ExpandFlags { merged: true, short: true, ..Default::default() };
+        let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
+        assert!(result.contains("a!"), "should collapse Authorization: {result}");
+        assert!(result.contains("bearer!"), "should collapse Bearer: {result}");
     }
 
     #[test]
     fn expand_request_parse_error() {
         let config = Config::empty();
-        let result = expand_request("{broken", &config);
+        let result = expand_merged("{broken", &config);
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
@@ -1548,14 +1565,14 @@ mod tests {
     fn expand_request_no_method_ok() {
         // No method defaults to GET with empty URL
         let config = Config::empty();
-        let result = expand_request(r#"{"h": {"Accept": "j!"}}"#, &config);
+        let result = expand_merged(r#"{"h": {"Accept": "j!"}}"#, &config);
         assert!(result.is_ok());
     }
 
     #[test]
     fn expand_request_url_not_string_error() {
         let config = Config::empty();
-        let result = expand_request(r#"{"g": {"nested": true}}"#, &config);
+        let result = expand_merged(r#"{"g": {"nested": true}}"#, &config);
         assert!(result.is_err());
         match result.unwrap_err() {
             RequestError::Structure { msg } => {
