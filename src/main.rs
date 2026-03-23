@@ -1171,31 +1171,25 @@ async fn main() {
 
     if io::stdin().is_terminal() || args.step {
         // Interactive mode — run REPL on a blocking thread, send lines via channel
-        // In --step mode, pre-load stdin requests for .next/.go commands
-        let step_queue = if args.step && !io::stdin().is_terminal() {
-            let stdin = io::stdin().lock();
-            let mut reader = StdinReader::new(stdin);
-            let mut queue = std::collections::VecDeque::new();
-            while let Some(result) = reader.next() {
-                match result {
-                    Ok(line) => queue.push_back(line),
-                    Err(e) => eprintln!("{}", e.display_colored()),
-                }
-            }
-            Some(queue)
-        } else {
-            None
-        };
+        // In --step mode, StdinReader is created on the REPL thread as a lazy source
+        let is_step = args.step && !io::stdin().is_terminal();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
 
         let repl_config = Arc::clone(&config);
         let repl_handle = std::thread::spawn(move || {
+            let stdin_source: Option<interactive::StdinSource> = if is_step {
+                let stdin = io::stdin().lock();
+                let mut reader = StdinReader::new(stdin);
+                Some(Box::new(move || reader.next()))
+            } else {
+                None
+            };
             interactive::run(|line| {
                 let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
                 tx.send((line, done_tx)).ok();
                 done_rx.recv().ok();
-            }, &repl_config, step_queue);
+            }, &repl_config, stdin_source);
         });
 
         // Process lines as they arrive from the REPL

@@ -1,10 +1,16 @@
 use arc_swap::ArcSwap;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::error::RequestError;
 use crate::{expand_with_flags, ExpandFlags};
 use super::help;
+
+/// A lazy source of stdin documents for step mode.
+/// Returns `None` when exhausted, `Some(Ok(json))` for valid documents,
+/// `Some(Err(e))` for parse errors.
+pub type StdinSource = Box<dyn FnMut() -> Option<Result<String, RequestError>>>;
+
 
 /// Input events from the user.
 #[derive(Debug, Clone)]
@@ -63,7 +69,7 @@ pub struct Driver {
     config: Arc<ArcSwap<Config>>,
     history: Vec<String>,
     history_cursor: usize,
-    queue: VecDeque<String>,
+    stdin_source: Option<StdinSource>,
     step_mode: bool,
     /// When Some, the next Text input is an edit of this pre-filled prompt.
     prefill: Option<String>,
@@ -76,15 +82,15 @@ pub struct Driver {
 impl Driver {
     pub fn new(
         config: Arc<ArcSwap<Config>>,
-        queue: VecDeque<String>,
+        stdin_source: Option<StdinSource>,
         history_path: Option<String>,
     ) -> Self {
-        let step_mode = !queue.is_empty();
+        let step_mode = stdin_source.is_some();
         Driver {
             config,
             history: Vec::new(),
             history_cursor: 0,
-            queue,
+            stdin_source,
             step_mode,
             prefill: None,
             history_path,
@@ -329,25 +335,49 @@ impl Driver {
     }
 
     fn handle_next(&mut self) -> Vec<Effect> {
-        if let Some(req) = self.queue.pop_front() {
-            self.prefill = Some(req.clone());
-            vec![Effect::Prefill(req)]
-        } else {
-            vec![Effect::Print("  no more requests".to_string())]
+        let source = match &mut self.stdin_source {
+            Some(s) => s,
+            None => return vec![Effect::Print("  no more requests".to_string())],
+        };
+        match source() {
+            Some(Ok(req)) => {
+                self.prefill = Some(req.clone());
+                vec![Effect::Prefill(req)]
+            }
+            Some(Err(e)) => {
+                vec![Effect::Print(e.display_colored())]
+            }
+            None => {
+                vec![Effect::Print("  no more requests".to_string())]
+            }
         }
     }
 
     fn handle_go(&mut self) -> Vec<Effect> {
-        if self.queue.is_empty() {
-            return vec![Effect::Print("  no more requests".to_string())];
-        }
+        let source = match &mut self.stdin_source {
+            Some(s) => s,
+            None => return vec![Effect::Print("  no more requests".to_string())],
+        };
         let mut effects = Vec::new();
         let mut count = 0;
-        while let Some(req) = self.queue.pop_front() {
-            effects.push(Effect::Execute(req));
-            count += 1;
+        loop {
+            match source() {
+                Some(Ok(req)) => {
+                    effects.push(Effect::Execute(req));
+                    count += 1;
+                }
+                Some(Err(e)) => {
+                    effects.push(Effect::Print(e.display_colored()));
+                    break;
+                }
+                None => break,
+            }
         }
-        effects.push(Effect::Print(format!("  {count} requests executed")));
+        if count > 0 {
+            effects.push(Effect::Print(format!("  {count} requests executed")));
+        } else if effects.is_empty() {
+            effects.push(Effect::Print("  no more requests".to_string()));
+        }
         effects
     }
 
@@ -360,19 +390,33 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     fn empty_driver() -> Driver {
         let config = Arc::new(ArcSwap::from_pointee(Config::empty()));
-        Driver::new(config, VecDeque::new(), None)
+        Driver::new(config, None, None)
     }
 
-    fn step_driver(queue: Vec<&str>) -> Driver {
+    fn step_driver(items: Vec<Result<&str, &str>>) -> Driver {
         let config = Arc::new(ArcSwap::from_pointee(Config::empty()));
-        Driver::new(
-            config,
-            queue.into_iter().map(String::from).collect(),
-            None,
-        )
+        let mut queue: VecDeque<Result<String, RequestError>> = items
+            .into_iter()
+            .map(|r| match r {
+                Ok(s) => Ok(s.to_string()),
+                Err(msg) => Err(RequestError::Parse {
+                    input: msg.to_string(),
+                    line: None,
+                    column: None,
+                    msg: msg.to_string(),
+                }),
+            })
+            .collect();
+        let source: StdinSource = Box::new(move || queue.pop_front().map(|r| r));
+        Driver::new(config, Some(source), None)
+    }
+
+    fn step_driver_ok(items: Vec<&str>) -> Driver {
+        step_driver(items.into_iter().map(Ok).collect())
     }
 
     fn has_effect(effects: &[Effect], pred: impl Fn(&Effect) -> bool) -> bool {
@@ -502,7 +546,7 @@ mod tests {
     fn expand_merged() {
         let config_json = yttp::parse(r#"{h: {X-From-Config: "yes"}}"#).unwrap();
         let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, VecDeque::new(), None);
+        let mut d = Driver::new(config, None, None);
         let effects = d.handle_input(Input::Text(r#".x m {g: example.com}"#.into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("X-From-Config"))));
     }
@@ -511,7 +555,7 @@ mod tests {
     fn expand_unmerged_default() {
         let config_json = yttp::parse(r#"{h: {X-From-Config: "yes"}}"#).unwrap();
         let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, VecDeque::new(), None);
+        let mut d = Driver::new(config, None, None);
         // Default (no m flag) should NOT include config headers
         let effects = d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
         assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("X-From-Config"))));
@@ -588,7 +632,7 @@ mod tests {
     fn expand_short_headers() {
         let config_json = yttp::parse(r#"{h: {Authorization: "Bearer tok"}}"#).unwrap();
         let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, VecDeque::new(), None);
+        let mut d = Driver::new(config, None, None);
         let effects = d.handle_input(Input::Text(r#".x ms {g: example.com}"#.into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("a!") && s.contains("bearer!"))));
     }
@@ -612,48 +656,77 @@ mod tests {
     // --- Step mode ---
 
     #[test]
-    fn next_pops_from_queue() {
-        let mut d = step_driver(vec!["{g: example.com}", "{g: other.com}"]);
+    fn next_reads_from_source() {
+        let mut d = step_driver_ok(vec!["{g: example.com}", "{g: other.com}"]);
         let effects = d.handle_input(Input::Text(".next".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
-        assert_eq!(d.queue.len(), 1);
+        // Ctrl-C to clear prefill, then second .next should get the second item
+        d.handle_input(Input::CtrlC);
+        let effects = d.handle_input(Input::Text(".next".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("other.com"))));
     }
 
     #[test]
     fn next_shortcut() {
-        let mut d = step_driver(vec!["{g: example.com}"]);
+        let mut d = step_driver_ok(vec!["{g: example.com}"]);
         let effects = d.handle_input(Input::Text(".n".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
     }
 
     #[test]
     fn next_empty_queue() {
-        let mut d = step_driver(vec![]);
+        let mut d = step_driver_ok(vec![]);
         let effects = d.handle_input(Input::Text(".next".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
     }
 
     #[test]
     fn go_executes_all() {
-        let mut d = step_driver(vec!["{g: a.com}", "{g: b.com}", "{g: c.com}"]);
+        let mut d = step_driver_ok(vec!["{g: a.com}", "{g: b.com}", "{g: c.com}"]);
         let effects = d.handle_input(Input::Text(".go".into()));
         let exec_count = effects.iter().filter(|e| matches!(e, Effect::Execute(_))).count();
         assert_eq!(exec_count, 3);
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("3 requests"))));
-        assert!(d.queue.is_empty());
     }
 
     #[test]
     fn go_shortcut() {
-        let mut d = step_driver(vec!["{g: a.com}"]);
+        let mut d = step_driver_ok(vec!["{g: a.com}"]);
         let effects = d.handle_input(Input::Text(".g".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(_))));
     }
 
     #[test]
     fn go_empty_queue() {
-        let mut d = step_driver(vec![]);
+        let mut d = step_driver_ok(vec![]);
         let effects = d.handle_input(Input::Text(".go".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
+    }
+
+    #[test]
+    fn next_shows_error_from_source() {
+        let mut d = step_driver(vec![Err("bad yaml")]);
+        let effects = d.handle_input(Input::Text(".next".into()));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("bad yaml"))));
+        // Should not prefill
+        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
+    }
+
+    #[test]
+    fn go_stops_on_error() {
+        let mut d = step_driver(vec![Ok("{g: a.com}"), Err("bad yaml"), Ok("{g: b.com}")]);
+        let effects = d.handle_input(Input::Text(".go".into()));
+        // Should execute the first, print error, not execute the third
+        let exec_count = effects.iter().filter(|e| matches!(e, Effect::Execute(_))).count();
+        assert_eq!(exec_count, 1);
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("bad yaml"))));
+        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("1 requests"))));
+    }
+
+    #[test]
+    fn next_in_non_step_mode() {
+        let mut d = empty_driver();
+        let effects = d.handle_input(Input::Text(".next".into()));
         assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
     }
 

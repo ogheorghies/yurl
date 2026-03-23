@@ -2,7 +2,7 @@ mod driver;
 mod help;
 
 pub use help::reference_card;
-pub use driver::{Driver, Input, Effect};
+pub use driver::{Driver, Input, Effect, StdinSource};
 
 use arc_swap::ArcSwap;
 use console::style;
@@ -14,7 +14,6 @@ use rustyline::completion::{Completer, Pair};
 use rustyline::Helper;
 use rustyline::Context;
 use std::borrow::Cow;
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::config::Config;
@@ -70,14 +69,13 @@ const EXAMPLE: &str = "{g: https://httpbin.org/get}";
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
 /// `config` is shared via ArcSwap — `.x` reads it, `.c` replaces it.
-/// If `step_queue` is Some, enables .next and .go commands for stepping through piped requests.
-pub fn run<F>(mut on_request: F, config: &Arc<ArcSwap<Config>>, step_queue: Option<VecDeque<String>>)
+/// If `stdin_source` is Some, enables .next and .go commands for stepping through piped requests.
+pub fn run<F>(mut on_request: F, config: &Arc<ArcSwap<Config>>, stdin_source: Option<StdinSource>)
 where
     F: FnMut(String),
 {
     let history_path = dirs_hint();
-    let queue = step_queue.unwrap_or_default();
-    let step_mode = !queue.is_empty();
+    let step_mode = stdin_source.is_some();
 
     let rl_config = rustyline::Config::builder()
         .behavior(rustyline::config::Behavior::PreferTerm)
@@ -100,7 +98,7 @@ where
     let version = env!("CARGO_PKG_VERSION");
     eprintln!("{yurl} v{version}\n");
 
-    let mut driver = Driver::new(Arc::clone(config), queue, history_path.clone());
+    let mut driver = Driver::new(Arc::clone(config), stdin_source, history_path.clone());
 
     #[cfg(debug_assertions)]
     let exe_mtime_at_start = exe_mtime();
