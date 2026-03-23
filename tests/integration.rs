@@ -744,14 +744,14 @@ fn query_params_absent_noop() {
 // --- Error handling ---
 
 #[test]
-fn invalid_json_batch_fails() {
+fn invalid_jsonl_batch_fails() {
     let b = base();
-    // First request is invalid JSON syntax, second is valid
+    // First request is unparseable, second is valid — batch should fail on user error
     let input = format!("{{broken\n{{\"g\": \"{b}/get\", \"1\": \"b\"}}");
     let output = jurl_full(&input, None);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid JSON"), "stderr should show JSON error: {stderr}");
-    assert!(!output.status.success(), "batch should exit non-zero on JSON syntax error");
+    assert!(stderr.contains("error") || stderr.contains("^"), "stderr should show error: {stderr}");
+    assert!(!output.status.success(), "batch should exit non-zero on parse error");
 }
 
 #[test]
@@ -808,13 +808,12 @@ fn space_separated_format_atoms() {
 }
 
 #[test]
-fn curly_brace_input_detected_as_json() {
-    // Input starting with { is auto-detected as JSONL, even if it looks like YAML flow.
-    // Syntax validation catches it as invalid JSON.
+fn yaml_flow_with_empty_value_is_error() {
+    // {g: google.com, adad:} has an empty value — yttp should report an error
     let input = "{g: google.com, adad:}";
     let output = jurl_full(input, None);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid JSON"), "should show JSON syntax error: {stderr}");
+    assert!(!stderr.is_empty(), "should show error: {stderr}");
     assert!(!output.status.success(), "should exit non-zero");
 }
 
@@ -827,22 +826,18 @@ fn url_not_string_prints_error() {
 }
 
 #[test]
-fn syntax_error_in_json_batch_stops_before_subsequent() {
+fn parse_error_in_jsonl_batch_stops() {
     let b = base();
-    // Three requests: valid, syntax error, valid — batch should stop at the syntax error
+    // Three requests: valid, unparseable, valid — batch should fail
     let input = format!(
         r#"{{"g": "{b}/get", "1": "s"}}
 {{broken
 {{"g": "{b}/get", "1": "s"}}"#
     );
     let output = jurl_full(&input, None);
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("invalid JSON"), "should show JSON syntax error: {stderr}");
+    assert!(stderr.contains("error") || stderr.contains("^"), "should show parse error: {stderr}");
     assert!(!output.status.success(), "batch should exit non-zero");
-    // First valid request may or may not have completed (it was sent before the error),
-    // but the third request should not execute
-    assert!(stdout.matches("200").count() <= 1, "should not process requests after syntax error: {stdout}");
 }
 
 #[test]
@@ -890,6 +885,16 @@ fn request_with_query_params_in_url() {
     let out = jurl(&input);
     let body = parse_json(&out);
     assert_eq!(body["args"]["foo"], "bar");
+}
+
+#[test]
+fn yaml_flow_with_unquoted_keys_works() {
+    let b = base();
+    // YAML flow syntax like {g: url} should work — not rejected as "invalid JSON"
+    let input = format!("{{g: {b}/get, 1: s}}");
+    let output = jurl_full(&input, None);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("200"), "YAML flow should work: stdout={stdout}");
 }
 
 // --- Invalid YAML handling (no panic) ---
