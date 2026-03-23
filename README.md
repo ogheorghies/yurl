@@ -263,7 +263,7 @@ yurl v0.6.1
 |---|---|
 | `.next` / `.n` | load next piped request, edit, Enter to send |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
-| `.x {req}` | expand, edit, send (horizontal YAML, unmerged) |
+| `.x {req}` | expand and edit (horizontal YAML, unmerged) |
 | `.x m {req}` | expand with merged config headers/rules |
 | `.x v {req}` | expand as vertical (multiline) YAML |
 | `.x c {req}` | expand as curl command |
