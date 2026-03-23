@@ -299,7 +299,7 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.10.0
+yurl v0.11.0
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged

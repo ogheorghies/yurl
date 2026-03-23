@@ -1040,6 +1040,16 @@ impl<R: BufRead> StdinReader<R> {
     }
 }
 
+/// Iterator adapter for StdinReader (which uses a manual `next()` method, not `Iterator`).
+struct StdinReaderIter<R: BufRead>(StdinReader<R>);
+
+impl<R: BufRead> Iterator for StdinReaderIter<R> {
+    type Item = Result<String, RequestError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Args = argh::from_env();
@@ -1229,17 +1239,52 @@ async fn main() {
         })
     };
 
-    if (io::stdin().is_terminal() && !has_request_args) || args.interactive {
-        // Interactive mode — run REPL on a blocking thread, send lines via channel
-        // Sources for .next/.go: request args, piped stdin, or none (ad-hoc only)
+    // ── Command source architecture ──────────────────────────────────────
+    //
+    // All input modes (TTY, stdin, positional args) feed requests through
+    // the same bounded channel. A source thread reads from the appropriate
+    // input and sends (idx, request_json, done_signal) tuples.
+    //
+    // The done_signal distinguishes interactive from batch mode:
+    //   - Interactive (REPL): Some(SyncSender) — source blocks until the
+    //     request completes, so the REPL can show the next prompt.
+    //   - Batch (args/stdin): None — requests fan out concurrently,
+    //     bounded by the global and per-rule semaphores.
+    //
+    // One dispatch loop handles both modes. The source thread is the only
+    // part that differs between modes.
+    //
+    // ───────────────────────────────────────────────────────────────────────
+
+    let pipe_cfg = config.load_full();
+    let rule_slots: usize = pipe_cfg.rules.iter().filter_map(|r| r.concurrency).sum();
+    let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
+    drop(pipe_cfg);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String, Option<std::sync::mpsc::SyncSender<()>>)>(channel_capacity);
+
+    let interactive = (io::stdin().is_terminal() && !has_request_args) || args.interactive;
+    let idx_counter_source = Arc::clone(&idx_counter);
+
+    // ── Source thread ──────────────────────────────────────────────────
+    //
+    // Three variants, one thread:
+    //   1. REPL (interactive): Driver handles commands (.x, .c, .step, etc.)
+    //      and emits Execute effects. Only requests reach the channel.
+    //   2. Args (batch): positional request args concatenated and fed through
+    //      StdinReader, which handles multi-line JSONL and YAML.
+    //   3. Stdin (batch): piped input fed through StdinReader with backpressure.
+    //
+    // All three use StdinReader for parsing. The REPL wraps it as a
+    // StdinSource for .next/.go lazy reading.
+
+    let source_handle = if interactive {
         let has_piped_stdin = args.interactive && !io::stdin().is_terminal() && !has_request_args;
-
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, std::sync::mpsc::SyncSender<()>)>();
-
         let repl_config = Arc::clone(&config);
-        let repl_handle = std::thread::spawn(move || {
+
+        std::thread::spawn(move || {
+            // Build the step source for .next/.go (args, piped stdin, or none)
             let stdin_source: Option<interactive::StdinSource> = if has_request_args {
-                // Request args as step source (supports multi-line per arg)
                 let combined = request_args.join("\n");
                 let mut reader = StdinReader::new(std::io::Cursor::new(combined));
                 Some(Box::new(move || reader.next()))
@@ -1250,139 +1295,112 @@ async fn main() {
             } else {
                 None
             };
+
+            // on_request callback: send request + done signal through the shared channel
             interactive::run(|line| {
+                let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
                 let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
-                tx.send((line, done_tx)).ok();
-                done_rx.recv().ok();
+                tx.blocking_send((idx, line, Some(done_tx))).ok();
+                done_rx.recv().ok(); // block until request completes
             }, &repl_config, stdin_source);
-        });
+        })
+    } else {
+        // Batch source: args or stdin, no done signal (concurrent fan-out)
+        std::thread::spawn(move || {
+            let mut reader: Box<dyn Iterator<Item = Result<String, RequestError>>> = if has_request_args {
+                let combined = request_args.join("\n");
+                Box::new(StdinReaderIter(StdinReader::new(std::io::Cursor::new(combined))))
+            } else {
+                let stdin = io::stdin().lock();
+                Box::new(StdinReaderIter(StdinReader::new(stdin)))
+            };
 
-        // Process lines as they arrive from the REPL
-        while let Some((line, done_tx)) = rx.recv().await {
-            let idx = idx_counter.fetch_add(1, Ordering::Relaxed);
+            while let Some(result) = reader.next() {
+                let line = match result {
+                    Ok(line) => line,
+                    Err(e) => {
+                        eprintln!("{}", e.display_colored());
+                        std::process::exit(1);
+                    }
+                };
+                let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
+                if tx.blocking_send((idx, line, None)).is_err() {
+                    break;
+                }
+            }
+        })
+    };
 
-            // Show spinner while request is in flight
-            let spinner = ProgressBar::new_spinner();
-            spinner.set_style(
+    // ── Dispatch loop ──────────────────────────────────────────────────
+    //
+    // Single loop for all modes. Each message is a request to execute.
+    // The done_signal determines sequencing:
+    //   - Some(done_tx): await the request, then signal (REPL)
+    //   - None: collect the handle, await all at end (batch)
+
+    let mut handles = Vec::new();
+
+    while let Some((idx, line, done_signal)) = rx.recv().await {
+        if fatal.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let spinner = if interactive {
+            let s = ProgressBar::new_spinner();
+            s.set_style(
                 ProgressStyle::default_spinner()
                     .template("  {spinner} \x1b[2mrequest {msg}...\x1b[0m")
                     .unwrap(),
             );
-            spinner.set_message(format!("{idx}"));
-            eprint!("\x1b[?25l"); // hide cursor
-            spinner.enable_steady_tick(std::time::Duration::from_millis(80));
+            s.set_message(format!("{idx}"));
+            eprint!("\x1b[?25l");
+            s.enable_steady_tick(std::time::Duration::from_millis(80));
+            Some(s)
+        } else {
+            None
+        };
 
-            let current_config = config.load_full();
-            let handle = spawn_request(
-                line,
-                client.clone(),
-                current_config,
-                Arc::clone(&global_sem),
-                Arc::clone(&rule_sems),
-                Arc::clone(&stdout_lock),
-                Arc::clone(&stderr_lock),
-                progress_bar.clone(),
-                stderr_suppressed.clone(),
-                warn_bar.clone(),
-                Arc::clone(&cache_stores),
-                idx,
-                concurrent,
-                yaml_mode,
-                Arc::clone(&fatal),
-            );
+        let handle = spawn_request(
+            line,
+            client.clone(),
+            config.load_full(),
+            Arc::clone(&global_sem),
+            Arc::clone(&rule_sems),
+            Arc::clone(&stdout_lock),
+            Arc::clone(&stderr_lock),
+            progress_bar.clone(),
+            stderr_suppressed.clone(),
+            warn_bar.clone(),
+            Arc::clone(&cache_stores),
+            idx,
+            concurrent,
+            yaml_mode,
+            Arc::clone(&fatal),
+        );
+
+        if let Some(done_tx) = done_signal {
+            // Interactive: sequential — await this request, then unblock the REPL
             if let Err(e) = handle.await {
                 eprintln!("  request failed: {e}");
             }
-            spinner.finish_and_clear();
-            eprint!("\x1b[?25h"); // restore cursor
-            // Signal REPL to show next prompt
-            done_tx.send(()).ok();
-        }
-
-        repl_handle.join().ok();
-    } else {
-        // Batch mode — request args or streaming stdin with backpressure.
-        let pipe_cfg = config.load_full();
-        let rule_slots: usize = pipe_cfg.rules.iter().filter_map(|r| r.concurrency).sum();
-        let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
-        drop(pipe_cfg);
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String)>(channel_capacity);
-
-        let idx_counter_reader = Arc::clone(&idx_counter);
-        let reader_handle = if has_request_args {
-            // Feed request args through StdinReader (supports multi-line JSONL/YAML per arg)
-            std::thread::spawn(move || {
-                let combined = request_args.join("\n");
-                let mut reader = StdinReader::new(std::io::Cursor::new(combined));
-                while let Some(result) = reader.next() {
-                    let line = match result {
-                        Ok(line) => line,
-                        Err(e) => {
-                            eprintln!("{}", e.display_colored());
-                            std::process::exit(1);
-                        }
-                    };
-                    let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
-                    if tx.blocking_send((idx, line)).is_err() {
-                        break;
-                    }
-                }
-            })
-        } else {
-            // Read from stdin
-            std::thread::spawn(move || {
-                let stdin = io::stdin().lock();
-                let mut reader = StdinReader::new(stdin);
-                while let Some(result) = reader.next() {
-                    let line = match result {
-                        Ok(line) => line,
-                        Err(e) => {
-                            eprintln!("{}", e.display_colored());
-                            std::process::exit(1);
-                        }
-                    };
-                    let idx = idx_counter_reader.fetch_add(1, Ordering::Relaxed);
-                    if tx.blocking_send((idx, line)).is_err() {
-                        break;
-                    }
-                }
-            })
-        };
-
-        let mut handles = Vec::new();
-
-        while let Some((idx, line)) = rx.recv().await {
-            if fatal.load(Ordering::Relaxed) {
-                break;
+            if let Some(s) = spinner {
+                s.finish_and_clear();
+                eprint!("\x1b[?25h");
             }
-            let handle = spawn_request(
-                line,
-                client.clone(),
-                config.load_full(),
-                Arc::clone(&global_sem),
-                Arc::clone(&rule_sems),
-                Arc::clone(&stdout_lock),
-                Arc::clone(&stderr_lock),
-                progress_bar.clone(),
-                stderr_suppressed.clone(),
-                warn_bar.clone(),
-                Arc::clone(&cache_stores),
-                idx,
-                concurrent,
-                yaml_mode,
-                Arc::clone(&fatal),
-            );
+            done_tx.send(()).ok();
+        } else {
+            // Batch: concurrent — collect handle, await all at end
             handles.push(handle);
         }
-
-        // Wait for all in-flight tasks to complete
-        for handle in handles {
-            if let Err(e) = handle.await {
-                eprintln!("request failed: {e}");
-            }
-        }
-        reader_handle.join().ok();
     }
+
+    // Wait for remaining batch handles
+    for handle in handles {
+        if let Err(e) = handle.await {
+            eprintln!("request failed: {e}");
+        }
+    }
+    source_handle.join().ok();
 
     let exit_code = if fatal.load(Ordering::Relaxed) { 1 } else { 0 };
 
