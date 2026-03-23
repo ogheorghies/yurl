@@ -243,7 +243,9 @@ yurl enters interactive mode when stdin is a terminal. Type requests directly, u
 
 #### `.x` — expand and inspect
 
-`.x [flags] {request}` — resolve a request with optional flags. Horizontal output pre-fills the prompt for editing. Vertical and curl output prints.
+`.x [flags] {request}` — expand/print a request with optional flags.
+Horizontal (flow) pre-fills the prompt for editing. Vertical (multiline) and curl only prints, as there is no support for multiline
+  editing or curl execution yet.
 
 | Dimension | Options | Default |
 |---|---|---|
