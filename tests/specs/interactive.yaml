@@ -388,6 +388,42 @@
       assert:
         prefill: ""
 
+- name: down on empty history
+  interaction:
+    - user: down
+      assert:
+        no_effect: true
+
+- name: down without prior up
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: down
+      assert:
+        no_effect: true
+
+- name: up down up round-trip
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: "{g: second.com}"
+      assert:
+        execute: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: first.com}"
+    - user: down
+      assert:
+        prefill: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: first.com}"
+
 - name: up on empty history
   interaction:
     - user: up
@@ -514,47 +550,89 @@
       assert:
         execute: "{get: https://example.com}"
 
-# === Display assertions (mock executor) ===
+# === End-to-end with mockinx ===
 
-- name: request displays mock response
-  mock_responses:
-    "example.com":
-      stdout: "HTTP/1.1 200 OK"
-      stderr: ""
+- name: request hits mockinx and displays response
+  rules:
+    - match: {g: /e2e}
+      reply: {s: 200, h: {ct!: j!}, b: {hello: world}}
   interaction:
-    - user: "{g: example.com, 1: s}"
+    - user: "{g: mx!/e2e, 1: b}"
       assert:
-        execute: {contains: "example.com"}
-        display: "HTTP/1.1 200 OK"
+        stdout: {contains: "hello"}
 
-- name: display contains substring
-  mock_responses:
-    "example.com":
-      stdout: '{"s":{"c":200,"t":"OK"},"b":{"hello":"world"}}'
+- name: config with API alias and auth verified by mockinx
+  rules:
+    - match: {g: /api/data}
+      reply: {s: 200, b: {reflect!: [i.h]}}
+  config: "{api: mx!, h: {a!: bearer!session-tok}}"
   interaction:
-    - user: "{g: example.com}"
+    - user: "{g: api!/api/data, 1: b}"
       assert:
-        execute: {contains: "example.com"}
-        display: {contains: "hello"}
+        stdout: {contains: "Bearer session-tok"}
 
-- name: error response displays on stderr
-  mock_responses:
-    "example.com":
-      stdout: ""
-      stderr: "connection refused"
+# === Expansion with config (API alias + headers) ===
+
+- name: .x m with API alias and auth shows expanded URL
+  config: '{api: https://api.example.com, h: {a!: bearer!session-tok}}'
   interaction:
-    - user: "{g: example.com}"
+    - user: ".x m {g: api!/data}"
       assert:
-        execute: {contains: "example.com"}
-        display: {contains: "connection refused"}
+        prefill: {contains: "api.example.com/data"}
 
-- name: display with config affecting output
+- name: .x m with API alias and auth shows auth header
+  config: '{api: https://api.example.com, h: {a!: bearer!session-tok}}'
+  interaction:
+    - user: ".x m {g: api!/data}"
+      assert:
+        prefill: {contains: "Bearer session-tok"}
+
+# === Request cancellation ===
+
+- name: ctrl-c during request produces cancel
+  interaction:
+    - user: "{g: slow.com}"
+      assert:
+        execute: {contains: "slow.com"}
+    - user: ctrl-c
+      assert:
+        cancel: true
+
+- name: ctrl-c when no request clears prefill
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: ctrl-c
+      assert:
+        prefill: null
+
+# === End-to-end response display (mockinx) ===
+
+- name: request complete produces stdout
+  rules:
+    - match: {g: /status}
+      reply: {s: 200, b: ok}
+  interaction:
+    - user: "{g: mx!/status, 1: s}"
+      assert:
+        stdout: "HTTP/1.1 200 OK"
+
+- name: response body displayed
+  rules:
+    - match: {g: /body}
+      reply: {s: 200, h: {ct!: j!}, b: {hello: world}}
+  interaction:
+    - user: "{g: mx!/body, 1: b}"
+      assert:
+        stdout: {contains: "hello"}
+
+- name: config output format applied to response
+  rules:
+    - match: {g: /cfg}
+      reply: {s: 200, b: ok}
   config: '{1: "j(s.code)"}'
-  mock_responses:
-    "example.com":
-      stdout: '{"s":{"c":200}}'
   interaction:
-    - user: "{g: example.com}"
+    - user: "{g: mx!/cfg}"
       assert:
-        execute: {contains: "example.com"}
-        display: {contains: "200"}
+        stdout: {contains: "200"}

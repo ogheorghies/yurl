@@ -70,10 +70,80 @@ const EXAMPLE: &str = "{g: https://httpbin.org/get}";
 /// Read requests interactively. Calls `on_request` for each complete request string.
 /// `config` is shared via ArcSwap — `.x` reads it, `.c` replaces it.
 /// If `stdin_source` is Some, enables .next and .go commands for stepping through piped requests.
-pub fn run<F>(mut on_request: F, config: &Arc<ArcSwap<Config>>, stdin_source: Option<StdinSource>)
-where
-    F: FnMut(String),
-{
+use crate::OutputResult;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// SIGINT handler for the poll loop — sets an AtomicBool flag
+static mut POLL_SIGINT_FLAG: *mut std::ffi::c_void = std::ptr::null_mut();
+
+extern "C" fn poll_sigint_handler(_sig: libc::c_int) {
+    unsafe {
+        if !POLL_SIGINT_FLAG.is_null() {
+            let flag = &*(POLL_SIGINT_FLAG as *const AtomicBool);
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Apply effects from the Driver. Returns true if Exit was encountered.
+fn apply_effects(
+    effects: &[Effect],
+    tx: &std::sync::mpsc::SyncSender<ReplMessage>,
+    rl: &mut rustyline::Editor<YurlHelper, rustyline::history::DefaultHistory>,
+    history_path: &Option<String>,
+) -> bool {
+    for effect in effects {
+        match effect {
+            Effect::Execute { id, line } => {
+                tx.send(ReplMessage::Request { id: *id, line: line.clone() }).ok();
+            }
+            Effect::Cancel { id } => {
+                tx.send(ReplMessage::Cancel { id: *id }).ok();
+            }
+            Effect::Stdout(s) => {
+                use std::io::Write;
+                std::io::stdout().write_all(s.as_bytes()).ok();
+            }
+            Effect::Stderr(s) => {
+                use std::io::Write;
+                std::io::stderr().write_all(s.as_bytes()).ok();
+            }
+            Effect::Prefill(_) => {
+                // Consumed by driver state — next loop iteration uses pending_prefill()
+            }
+            Effect::Print(msg) => {
+                if msg.ends_with('\n') {
+                    eprint!("{msg}");
+                } else {
+                    eprintln!("{msg}");
+                }
+            }
+            Effect::AddHistory(entry) => { rl.add_history_entry(entry).ok(); }
+            Effect::Exit => {
+                if let Some(path) = history_path {
+                    let _ = rl.save_history(path);
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Message from the REPL to the dispatch loop.
+pub enum ReplMessage {
+    /// Execute a request.
+    Request { id: usize, line: String },
+    /// Cancel the in-flight request.
+    Cancel { id: usize },
+}
+
+pub fn run(
+    tx: std::sync::mpsc::SyncSender<ReplMessage>,
+    rx: std::sync::mpsc::Receiver<OutputResult>,
+    config: &Arc<ArcSwap<Config>>,
+    stdin_source: Option<StdinSource>,
+) {
     let history_path = dirs_hint();
     let has_source = stdin_source.is_some();
 
@@ -125,26 +195,49 @@ where
 
         let effects = driver.handle_input(input);
 
-        for effect in effects {
-            match effect {
-                Effect::Execute(req) => on_request(req),
-                Effect::Prefill(_) => {
-                    // Prefill is consumed by the driver state — the next loop
-                    // iteration will use pending_prefill() to show it
-                }
-                Effect::Print(msg) => {
-                    if msg.ends_with('\n') {
-                        eprint!("{msg}");
-                    } else {
-                        eprintln!("{msg}");
+        if apply_effects(&effects, &tx, &mut rl, &history_path) {
+            return;
+        }
+
+        // If a request is in flight, poll for completion or Ctrl-C
+        if driver.is_request_in_flight() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+
+            // Install SIGINT handler for Ctrl-C during poll loop
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_ptr = Arc::into_raw(Arc::clone(&cancelled)) as *mut std::ffi::c_void;
+            unsafe {
+                POLL_SIGINT_FLAG = cancelled_ptr;
+                libc::signal(libc::SIGINT, poll_sigint_handler as libc::sighandler_t);
+            }
+
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(result) => {
+                        // Request completed — feed to Driver
+                        let id = driver.in_flight_id().unwrap_or(0);
+                        let effects = driver.handle_input(Input::RequestComplete { id, result });
+                        apply_effects(&effects, &tx, &mut rl, &history_path);
+                        break;
                     }
-                }
-                Effect::AddHistory(entry) => { rl.add_history_entry(&entry).ok(); }
-                Effect::Exit => {
-                    if let Some(ref path) = history_path {
-                        let _ = rl.save_history(path);
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if cancelled.load(Ordering::Relaxed) {
+                            cancelled.store(false, Ordering::Relaxed);
+                            let effects = driver.handle_input(Input::CtrlC);
+                            apply_effects(&effects, &tx, &mut rl, &history_path);
+                            break;
+                        }
                     }
-                    return;
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+
+            // Restore default SIGINT handling
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                if !POLL_SIGINT_FLAG.is_null() {
+                    let _ = Arc::from_raw(POLL_SIGINT_FLAG as *const AtomicBool);
+                    POLL_SIGINT_FLAG = std::ptr::null_mut();
                 }
             }
         }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::error::RequestError;
+use crate::OutputResult;
 use crate::{StdinReader, expand_with_flags, ExpandFlags};
 use super::help;
 
@@ -13,7 +14,7 @@ use super::help;
 pub type StdinSource = Box<dyn FnMut() -> Option<Result<String, RequestError>>>;
 
 
-/// Input events from the user.
+/// Input events — from the user or the system.
 #[derive(Debug, Clone)]
 pub enum Input {
     /// User typed text and pressed Enter.
@@ -22,20 +23,28 @@ pub enum Input {
     Up,
     /// Arrow down — navigate to next history entry.
     Down,
-    /// Ctrl-C — interrupt / skip.
+    /// Ctrl-C — interrupt / cancel.
     CtrlC,
     /// Ctrl-D — exit.
     CtrlD,
+    /// A request completed — the system delivers the result.
+    RequestComplete { id: usize, result: OutputResult },
 }
 
 /// Effects produced by the driver for the shell to apply.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// Send a request to be executed.
-    Execute(String),
+    Execute { id: usize, line: String },
+    /// Cancel the in-flight request.
+    Cancel { id: usize },
+    /// Display response output on stdout.
+    Stdout(String),
+    /// Display response output on stderr.
+    Stderr(String),
     /// Pre-fill the next prompt with this text.
     Prefill(String),
-    /// Print a message to stderr.
+    /// Print a message to stderr (REPL messages, not response output).
     Print(String),
     /// Record an entry in readline history.
     AddHistory(String),
@@ -77,6 +86,10 @@ pub struct Driver {
     history_path: Option<String>,
     /// Whether the REPL is in the middle of accumulating multi-line YAML.
     yaml_buf: Option<String>,
+    /// ID of the currently in-flight request, if any.
+    request_in_flight: Option<usize>,
+    /// Counter for assigning request IDs.
+    next_request_id: usize,
 }
 
 impl Driver {
@@ -93,11 +106,44 @@ impl Driver {
             prefill: None,
             history_path,
             yaml_buf: None,
+            request_in_flight: None,
+            next_request_id: 0,
         }
+    }
+
+    /// Whether a request is currently in flight.
+    pub fn is_request_in_flight(&self) -> bool {
+        self.request_in_flight.is_some()
+    }
+
+    /// The ID of the currently in-flight request.
+    pub fn in_flight_id(&self) -> Option<usize> {
+        self.request_in_flight
+    }
+
+    /// Create an Execute effect and track it as in-flight.
+    fn make_execute(&mut self, line: String) -> Effect {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.request_in_flight = Some(id);
+        Effect::Execute { id, line }
     }
 
     /// Process an input event and return effects to apply.
     pub fn handle_input(&mut self, input: Input) -> Vec<Effect> {
+        // Request completion — always handle regardless of other state
+        if let Input::RequestComplete { id, result } = input {
+            return self.handle_request_complete(id, result);
+        }
+
+        // Ctrl-C during in-flight request → cancel
+        if let Input::CtrlC = &input {
+            if let Some(id) = self.request_in_flight {
+                self.request_in_flight = None;
+                return vec![Effect::Cancel { id }];
+            }
+        }
+
         // Multi-line YAML accumulation mode
         if self.yaml_buf.is_some() {
             return self.handle_yaml_continuation(input);
@@ -106,7 +152,7 @@ impl Driver {
         match input {
             Input::CtrlD => vec![Effect::Exit],
             Input::CtrlC => {
-                // Clear any pending prefill (e.g. from .x expansion)
+                // No request in flight — clear any pending prefill
                 self.prefill = None;
                 vec![]
             }
@@ -127,7 +173,24 @@ impl Driver {
                 self.history_cursor = self.history.len();
                 self.handle_command(&trimmed, &text)
             }
+            Input::RequestComplete { .. } => unreachable!(), // handled above
         }
+    }
+
+    fn handle_request_complete(&mut self, id: usize, result: OutputResult) -> Vec<Effect> {
+        // Only process if this matches the in-flight request
+        if self.request_in_flight != Some(id) {
+            return vec![];
+        }
+        self.request_in_flight = None;
+        let mut effects = vec![];
+        if !result.stdout.is_empty() {
+            effects.push(Effect::Stdout(result.stdout));
+        }
+        if !result.stderr.is_empty() {
+            effects.push(Effect::Stderr(result.stderr));
+        }
+        effects
     }
 
     /// Whether the driver has a pending pre-fill for the next prompt.
@@ -174,7 +237,7 @@ impl Driver {
             return effects;
         }
         // Otherwise execute the edited text
-        vec![Effect::Execute(trimmed.to_string())]
+        vec![self.make_execute(trimmed.to_string())]
     }
 
     fn handle_command(&mut self, trimmed: &str, raw: &str) -> Vec<Effect> {
@@ -273,7 +336,7 @@ impl Driver {
         }
 
         // Single-line flow: starts with {
-        vec![Effect::Execute(trimmed.to_string())]
+        vec![self.make_execute(trimmed.to_string())]
     }
 
     fn handle_yaml_continuation(&mut self, input: Input) -> Vec<Effect> {
@@ -288,7 +351,7 @@ impl Driver {
                     if final_request.is_empty() {
                         return vec![];
                     }
-                    vec![Effect::Execute(final_request)]
+                    vec![self.make_execute(final_request)]
                 } else {
                     buf.push_str(&text);
                     buf.push('\n');
@@ -370,7 +433,10 @@ impl Driver {
         loop {
             match source() {
                 Some(Ok(req)) => {
-                    effects.push(Effect::Execute(req));
+                    let id = self.next_request_id;
+                    self.next_request_id += 1;
+                    self.request_in_flight = Some(id);
+                    effects.push(Effect::Execute { id, line: req });
                     count += 1;
                 }
                 Some(Err(e)) => {
@@ -415,6 +481,86 @@ mod tests {
     // Loads tests/specs/interactive.yaml and drives the Driver programmatically.
     // Each spec defines a sequence of user inputs and expected effects.
 
+    static MOCKINX_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    fn mockinx_url() -> &'static str {
+        MOCKINX_URL.get_or_init(|| {
+            let state = mockinx::server::AppState::new();
+            let app = mockinx::server::build_router(state);
+
+            let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = std_listener.local_addr().unwrap();
+            std_listener.set_nonblocking(true).unwrap();
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                rt.block_on(async {
+                    let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+                    axum::serve(
+                        listener,
+                        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+                    .unwrap();
+                });
+            });
+
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(addr).is_ok() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+
+            format!("http://{addr}")
+        })
+    }
+
+    fn setup_rules(base: &str, rules: &[serde_json::Value]) {
+        let client = reqwest::blocking::Client::new();
+        let body = serde_json::to_string(rules).unwrap();
+        client
+            .put(format!("{base}/_mx"))
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .expect("failed to set mockinx rules");
+    }
+
+    /// Execute a request line via jurl subprocess and return the output.
+    fn execute_request(line: &str, config: Option<&str>) -> crate::OutputResult {
+        // Find the jurl binary — in unit tests CARGO_BIN_EXE_ isn't available
+        let jurl = std::env::var("CARGO_BIN_EXE_jurl").unwrap_or_else(|_| {
+            let mut path = std::env::current_exe().unwrap();
+            path.pop(); // remove test binary name
+            path.pop(); // remove deps/
+            path.push("jurl");
+            path.to_string_lossy().to_string()
+        });
+        let mut cmd = std::process::Command::new(jurl);
+        if let Some(cfg) = config {
+            cmd.arg(cfg);
+        }
+        let output = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(line.as_bytes()).unwrap();
+                child.wait_with_output()
+            })
+            .expect("failed to run jurl");
+        crate::OutputResult {
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        }
+    }
+
     #[derive(serde::Deserialize)]
     struct InteractiveSpec {
         name: String,
@@ -422,19 +568,10 @@ mod tests {
         config: Option<String>,
         #[serde(default)]
         source: Vec<serde_json::Value>,
-        /// Mock responses: when Effect::Execute is produced, the next mock response
-        /// is used as the OutputResult. Maps request substring to (stdout, stderr).
+        /// mockinx rules — when present, Execute effects run against mockinx for real.
         #[serde(default)]
-        mock_responses: std::collections::HashMap<String, MockResponse>,
+        rules: Vec<serde_json::Value>,
         interaction: Vec<Interaction>,
-    }
-
-    #[derive(serde::Deserialize, Clone)]
-    struct MockResponse {
-        #[serde(default)]
-        stdout: String,
-        #[serde(default)]
-        stderr: String,
     }
 
     #[derive(serde::Deserialize)]
@@ -458,11 +595,15 @@ mod tests {
         #[serde(default)]
         exit: Option<bool>,
         #[serde(default)]
+        cancel: Option<bool>,
+        #[serde(default)]
         no_effect: Option<bool>,
-        /// Display assertion: checks the OutputResult from mock executor.
-        /// Asserts on the stdout portion of the response display.
+        /// Stdout assertion: checks Effect::Stdout from RequestComplete.
         #[serde(default, deserialize_with = "deser_effect_assert")]
-        display: Option<EffectAssert>,
+        stdout: Option<EffectAssert>,
+        /// Stderr assertion: checks Effect::Stderr from RequestComplete.
+        #[serde(default, deserialize_with = "deser_effect_assert")]
+        stderr: Option<EffectAssert>,
     }
 
     #[derive(Debug)]
@@ -521,9 +662,17 @@ mod tests {
         }
     }
 
+    fn resolve_mx(s: &str) -> String {
+        if !s.contains("mx!") { return s.to_string(); }
+        let base = mockinx_url();
+        let s = s.replace("mx!", &format!("{base}/"));
+        s.replace(&format!("{base}//"), &format!("{base}/"))
+    }
+
     fn build_driver_from_spec(spec: &InteractiveSpec) -> Driver {
         let config = if let Some(ref cfg_str) = spec.config {
-            match crate::parse_input(cfg_str) {
+            let resolved = resolve_mx(cfg_str);
+            match crate::parse_input(&resolved) {
                 Ok(json) => Config::parse(&json),
                 Err(_) => Config::empty(),
             }
@@ -568,7 +717,9 @@ mod tests {
                 let found = effects.iter().any(|e| match (kind, e) {
                     ("prefill", Effect::Prefill(s)) => s == exact,
                     ("print", Effect::Print(s)) => s.trim() == exact,
-                    ("execute", Effect::Execute(s)) => s == exact,
+                    ("execute", Effect::Execute { line: s, .. }) => s == exact,
+                    ("stdout", Effect::Stdout(s)) => s.trim() == exact,
+                    ("stderr_out", Effect::Stderr(s)) => s.trim() == exact,
                     _ => false,
                 });
                 assert!(found, "{ctx}: expected {kind}({exact:?}), got {effects:?}");
@@ -577,7 +728,9 @@ mod tests {
                 let found = effects.iter().any(|e| match (kind, e) {
                     ("prefill", Effect::Prefill(s)) => s.contains(sub.as_str()),
                     ("print", Effect::Print(s)) => s.contains(sub.as_str()),
-                    ("execute", Effect::Execute(s)) => s.contains(sub.as_str()),
+                    ("execute", Effect::Execute { line: s, .. }) => s.contains(sub.as_str()),
+                    ("stdout", Effect::Stdout(s)) => s.contains(sub.as_str()),
+                    ("stderr_out", Effect::Stderr(s)) => s.contains(sub.as_str()),
                     _ => false,
                 });
                 assert!(found, "{ctx}: expected {kind} containing {sub:?}, got {effects:?}");
@@ -586,7 +739,9 @@ mod tests {
                 let found = effects.iter().any(|e| match (kind, e) {
                     ("prefill", Effect::Prefill(s)) => s.contains(sub.as_str()),
                     ("print", Effect::Print(s)) => s.contains(sub.as_str()),
-                    ("execute", Effect::Execute(s)) => s.contains(sub.as_str()),
+                    ("execute", Effect::Execute { line: s, .. }) => s.contains(sub.as_str()),
+                    ("stdout", Effect::Stdout(s)) => s.contains(sub.as_str()),
+                    ("stderr_out", Effect::Stderr(s)) => s.contains(sub.as_str()),
                     _ => false,
                 });
                 assert!(!found, "{ctx}: expected {kind} NOT containing {sub:?}, got {effects:?}");
@@ -595,7 +750,9 @@ mod tests {
                 let found = effects.iter().any(|e| match (kind, e) {
                     ("prefill", Effect::Prefill(_)) => true,
                     ("print", Effect::Print(_)) => true,
-                    ("execute", Effect::Execute(_)) => true,
+                    ("execute", Effect::Execute { .. }) => true,
+                    ("stdout", Effect::Stdout(_)) => true,
+                    ("stderr_out", Effect::Stderr(_)) => true,
                     _ => false,
                 });
                 assert!(!found, "{ctx}: expected no {kind}, got {effects:?}");
@@ -623,34 +780,47 @@ mod tests {
             check_effect_assert(&ctx, "execute", a, effects);
         }
 
+        if let Some(ref a) = assert.stdout {
+            check_effect_assert(&ctx, "stdout", a, effects);
+        }
+
+        if let Some(ref a) = assert.stderr {
+            check_effect_assert(&ctx, "stderr_out", a, effects);
+        }
+
         if assert.exit == Some(true) {
             assert!(
                 effects.iter().any(|e| matches!(e, Effect::Exit)),
                 "{ctx}: expected Exit, got {effects:?}"
             );
         }
+
+        if assert.cancel == Some(true) {
+            assert!(
+                effects.iter().any(|e| matches!(e, Effect::Cancel { .. })),
+                "{ctx}: expected Cancel, got {effects:?}"
+            );
+        }
     }
 
-    /// Check display assertion against mock response output.
-    fn assert_display(ctx: &str, assertion: &EffectAssert, output: &crate::OutputResult) {
-        let combined = format!("{}{}", output.stdout, output.stderr);
-        match assertion {
-            EffectAssert::Exact(exact) => {
-                assert_eq!(combined.trim(), exact.as_str(),
-                    "{ctx}: display expected {exact:?}, got {combined:?}");
-            }
-            EffectAssert::Contains(sub) => {
-                assert!(combined.contains(sub.as_str()),
-                    "{ctx}: display should contain {sub:?}, got {combined:?}");
-            }
-            EffectAssert::NotContains(sub) => {
-                assert!(!combined.contains(sub.as_str()),
-                    "{ctx}: display should NOT contain {sub:?}, got {combined:?}");
-            }
-            EffectAssert::Null => {
-                assert!(combined.trim().is_empty(),
-                    "{ctx}: display should be empty, got {combined:?}");
-            }
+
+    /// Find the Execute effect's (id, line) if present.
+    fn find_execute(effects: &[Effect]) -> Option<(usize, String)> {
+        effects.iter().find_map(|e| match e {
+            Effect::Execute { id, line } => Some((*id, line.clone())),
+            _ => None,
+        })
+    }
+
+    /// Execute a request against mockinx and return the response.
+    fn get_response(spec: &InteractiveSpec, line: &str) -> crate::OutputResult {
+        if !spec.rules.is_empty() {
+            let resolved_line = resolve_mx(line);
+            let resolved_config = spec.config.as_deref().map(|c| resolve_mx(c));
+            execute_request(&resolved_line, resolved_config.as_deref())
+        } else {
+            // No rules — return empty (pure Driver logic tests)
+            crate::OutputResult { stdout: String::new(), stderr: String::new() }
         }
     }
 
@@ -663,41 +833,34 @@ mod tests {
             .unwrap_or_else(|e| panic!("failed to parse {path}: {e}"));
 
         for spec in &specs {
+            // Set up mockinx rules if present
+            if !spec.rules.is_empty() {
+                let base = mockinx_url();
+                setup_rules(base, &spec.rules);
+            }
+
             let mut driver = build_driver_from_spec(spec);
             for (i, step) in spec.interaction.iter().enumerate() {
                 let input = parse_user_input(&step.user);
-                let effects = driver.handle_input(input);
-                assert_effects(&spec.name, i, &step.user, &effects, &step.assertions);
+                let mut effects = driver.handle_input(input);
 
-                // Check display assertion against mock responses
-                if let Some(ref display_assert) = step.assertions.display {
-                    // Find the Execute effect and look up mock response
-                    let exec_line = effects.iter().find_map(|e| match e {
-                        Effect::Execute(s) => Some(s.clone()),
-                        _ => None,
-                    });
-                    if let Some(ref line) = exec_line {
-                        // Find matching mock response
-                        let mock = spec.mock_responses.iter()
-                            .find(|(key, _)| line.contains(key.as_str()))
-                            .map(|(_, v)| v);
-                        if let Some(resp) = mock {
-                            let result = crate::OutputResult {
-                                stdout: resp.stdout.clone(),
-                                stderr: resp.stderr.clone(),
-                            };
-                            assert_display(
-                                &format!("[{}] step {i} (user: {:?})", spec.name, step.user),
-                                display_assert,
-                                &result,
-                            );
-                        } else {
-                            panic!("[{}] step {i}: display assertion but no mock_response matching {line:?}", spec.name);
-                        }
-                    } else {
-                        panic!("[{}] step {i}: display assertion but no Execute effect", spec.name);
+                // If Execute was produced, check if we should auto-complete
+                // (feed RequestComplete) or leave in-flight (for cancel tests).
+                if let Some((id, ref line)) = find_execute(&effects) {
+                    let next_is_cancel = spec.interaction.get(i + 1)
+                        .is_some_and(|s| s.user == "ctrl-c");
+
+                    if !next_is_cancel {
+                        // Auto-complete: execute against mockinx or use mock response
+                        let result = get_response(spec, line);
+                        let completion_effects = driver.handle_input(
+                            Input::RequestComplete { id, result }
+                        );
+                        effects.extend(completion_effects);
                     }
                 }
+
+                assert_effects(&spec.name, i, &step.user, &effects, &step.assertions);
             }
         }
     }

@@ -375,6 +375,19 @@
   assert:
     stdout: {json: {i.h.x-req: "yes", i.h.x-cfg: "yes"}}
 
+- name: API alias with auth header reaches server
+  rules:
+    - match: {g: /api/data}
+      reply: {s: 200, b: {reflect!: [i.m, i.h, i.u]}}
+  input: "{g: api!/api/data, 1: b}"
+  config: '{api: mx!, h: {a!: bearer!session-tok}}'
+  assert:
+    stdout:
+      json:
+        i.m: "GET"
+        i.u: "/api/data"
+        i.h.authorization: "Bearer session-tok"
+
 - name: config + rule + request three-way merge
   rules:
     - match: {g: /merge}

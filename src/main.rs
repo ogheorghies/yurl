@@ -1066,32 +1066,6 @@ impl<R: BufRead> Iterator for StdinReaderIter<R> {
     }
 }
 
-// ── SIGINT cancellation for interactive mode ─────────────────────────
-//
-// A raw signal handler sets an AtomicBool flag when Ctrl-C is pressed.
-// The dispatch loop polls this flag via wait_for_cancel() in a select!
-// to abort in-flight requests. Only active during interactive request execution.
-
-static mut SIGINT_FLAG: *mut std::ffi::c_void = std::ptr::null_mut();
-
-extern "C" fn sigint_handler(_sig: libc::c_int) {
-    unsafe {
-        if !SIGINT_FLAG.is_null() {
-            let flag = &*(SIGINT_FLAG as *const AtomicBool);
-            flag.store(true, Ordering::Relaxed);
-        }
-    }
-}
-
-async fn wait_for_cancel(flag: &AtomicBool) {
-    loop {
-        if flag.load(Ordering::Relaxed) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let args: Args = argh::from_env();
@@ -1305,48 +1279,37 @@ async fn main() {
     // ── Command source architecture ──────────────────────────────────────
     //
     // All input modes (TTY, stdin, positional args) feed requests through
-    // the same bounded channel. A source thread reads from the appropriate
-    // input and sends (idx, request_json, done_signal) tuples.
+    // a bounded channel. The source thread reads from the appropriate input.
     //
-    // The done_signal distinguishes interactive from batch mode:
-    //   - Interactive (REPL): Some(SyncSender) — source blocks until the
-    //     request completes, so the REPL can show the next prompt.
-    //   - Batch (args/stdin): None — requests fan out concurrently,
-    //     bounded by the global and per-rule semaphores.
+    // Interactive mode: REPL sends ReplMessage (Request/Cancel) through a
+    // sync channel pair. A bridge thread forwards to the tokio channel.
+    // Results flow back through a separate sync channel.
     //
-    // One dispatch loop handles both modes. The source thread is the only
-    // part that differs between modes.
+    // Batch mode: reader thread sends directly to the tokio channel.
     //
     // ───────────────────────────────────────────────────────────────────────
+
+    /// Message in the dispatch channel — either a request to execute or a cancel.
+    enum DispatchMessage {
+        Request { idx: usize, line: String, result_tx: Option<std::sync::mpsc::SyncSender<OutputResult>> },
+        Cancel { id: usize },
+    }
 
     let pipe_cfg = config.load_full();
     let rule_slots: usize = pipe_cfg.rules.iter().filter_map(|r| r.concurrency).sum();
     let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
     drop(pipe_cfg);
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String, Option<std::sync::mpsc::SyncSender<OutputResult>>)>(channel_capacity);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DispatchMessage>(channel_capacity);
 
     let interactive = (io::stdin().is_terminal() && !has_request_args) || args.interactive;
     let idx_counter_source = Arc::clone(&idx_counter);
-
-    // ── Source thread ──────────────────────────────────────────────────
-    //
-    // Three variants, one thread:
-    //   1. REPL (interactive): Driver handles commands (.x, .c, .step, etc.)
-    //      and emits Execute effects. Only requests reach the channel.
-    //   2. Args (batch): positional request args concatenated and fed through
-    //      StdinReader, which handles multi-line JSONL and YAML.
-    //   3. Stdin (batch): piped input fed through StdinReader with backpressure.
-    //
-    // All three use StdinReader for parsing. The REPL wraps it as a
-    // StdinSource for .next/.go lazy reading.
 
     let source_handle = if interactive {
         let has_piped_stdin = args.interactive && !io::stdin().is_terminal() && !has_request_args;
         let repl_config = Arc::clone(&config);
 
         std::thread::spawn(move || {
-            // Build the step source for .next/.go (args, piped stdin, or none)
             let stdin_source: Option<interactive::StdinSource> = if has_request_args {
                 let combined = request_args.join("\n");
                 let mut reader = StdinReader::new(std::io::Cursor::new(combined));
@@ -1359,17 +1322,37 @@ async fn main() {
                 None
             };
 
-            // on_request callback: send request + done signal through the shared channel.
-            // Receives OutputResult back — the formatted response output.
-            interactive::run(|line| {
-                let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
-                let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<OutputResult>(0);
-                tx.blocking_send((idx, line, Some(done_tx))).ok();
-                done_rx.recv().ok(); // block until request completes; output already flushed
-            }, &repl_config, stdin_source);
+            // Sync channels for REPL ↔ dispatch communication
+            let (repl_tx, repl_rx) = std::sync::mpsc::sync_channel::<interactive::ReplMessage>(1);
+            let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<OutputResult>(1);
+
+            // Bridge thread: forward ReplMessages to the tokio dispatch channel
+            let bridge_tx = tx.clone();
+            let bridge_result_tx = result_tx.clone();
+            let bridge_handle = std::thread::spawn(move || {
+                while let Ok(msg) = repl_rx.recv() {
+                    match msg {
+                        interactive::ReplMessage::Request { id: _, line } => {
+                            let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
+                            bridge_tx.blocking_send(DispatchMessage::Request {
+                                idx,
+                                line,
+                                result_tx: Some(bridge_result_tx.clone()),
+                            }).ok();
+                        }
+                        interactive::ReplMessage::Cancel { id } => {
+                            bridge_tx.blocking_send(DispatchMessage::Cancel { id }).ok();
+                        }
+                    }
+                }
+            });
+
+            interactive::run(repl_tx, result_rx, &repl_config, stdin_source);
+            drop(result_tx); // close the result channel
+            bridge_handle.join().ok();
         })
     } else {
-        // Batch source: args or stdin, no done signal (concurrent fan-out)
+        // Batch source: args or stdin, no result channel (concurrent fan-out)
         std::thread::spawn(move || {
             let mut reader: Box<dyn Iterator<Item = Result<String, RequestError>>> = if has_request_args {
                 let combined = request_args.join("\n");
@@ -1388,7 +1371,7 @@ async fn main() {
                     }
                 };
                 let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
-                if tx.blocking_send((idx, line, None)).is_err() {
+                if tx.blocking_send(DispatchMessage::Request { idx, line, result_tx: None }).is_err() {
                     break;
                 }
             }
@@ -1397,112 +1380,95 @@ async fn main() {
 
     // ── Dispatch loop ──────────────────────────────────────────────────
     //
-    // Single loop for all modes. Each message is a request to execute.
-    // The done_signal determines sequencing:
-    //   - Some(done_tx): await the request, then signal (REPL)
-    //   - None: collect the handle, await all at end (batch)
+    // Single loop for all modes. Handles Request and Cancel messages.
+    // Interactive: result sent back via result_tx. Cancel aborts in-flight task.
+    // Batch: no result_tx, handles collected and awaited at end.
 
     let mut handles = Vec::new();
+    let mut in_flight: Option<(usize, tokio::task::JoinHandle<()>)> = None;
 
-    while let Some((idx, line, done_signal)) = rx.recv().await {
-        if fatal.load(Ordering::Relaxed) {
-            break;
-        }
-
-        let spinner = if interactive {
-            let s = ProgressBar::new_spinner();
-            s.set_style(
-                ProgressStyle::default_spinner()
-                    .template("  {spinner} \x1b[2mrequest {msg}...\x1b[0m")
-                    .unwrap(),
-            );
-            s.set_message(format!("{idx}"));
-            eprint!("\x1b[?25l");
-            s.enable_steady_tick(std::time::Duration::from_millis(80));
-            Some(s)
-        } else {
-            None
-        };
-
-        // Interactive mode: create oneshot to receive output back from the spawned task.
-        // Batch mode: no oneshot, output flushed directly by the task.
-        let (output_tx, output_rx) = if done_signal.is_some() {
-            let (tx, rx) = tokio::sync::oneshot::channel::<OutputResult>();
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
-
-        let handle = spawn_request(
-            line,
-            client.clone(),
-            config.load_full(),
-            Arc::clone(&global_sem),
-            Arc::clone(&rule_sems),
-            Arc::clone(&stdout_lock),
-            Arc::clone(&stderr_lock),
-            progress_bar.clone(),
-            stderr_suppressed.clone(),
-            warn_bar.clone(),
-            Arc::clone(&cache_stores),
-            idx,
-            concurrent,
-            yaml_mode,
-            Arc::clone(&fatal),
-            output_tx,
-        );
-
-        if let Some(done_tx) = done_signal {
-            // Interactive: await the request with Ctrl-C cancellation support.
-            // Install a SIGINT handler that sets a flag, use select! to race
-            // the request against the cancellation signal.
-            let cancelled = Arc::new(AtomicBool::new(false));
-            let cancelled_clone = Arc::clone(&cancelled);
-
-            // Install raw SIGINT handler — sets the flag, async-signal-safe
-            unsafe {
-                let flag = Arc::into_raw(cancelled_clone) as *mut std::ffi::c_void;
-                SIGINT_FLAG = flag;
-                libc::signal(libc::SIGINT, sigint_handler as libc::sighandler_t);
-            }
-
-            let result = tokio::select! {
-                res = handle => {
-                    // Request completed normally
-                    if let Err(e) = res {
-                        eprintln!("  request failed: {e}");
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            DispatchMessage::Cancel { id } => {
+                // Abort the in-flight task if it matches
+                if let Some((flight_id, handle)) = in_flight.take() {
+                    if flight_id == id {
+                        handle.abort();
                     }
-                    output_rx
-                        .unwrap()
-                        .await
-                        .unwrap_or_else(|_| OutputResult { stdout: String::new(), stderr: String::new() })
-                }
-                _ = wait_for_cancel(&cancelled) => {
-                    // Ctrl-C pressed — abort the request
-                    // handle is dropped here, which aborts the tokio task
-                    OutputResult { stdout: String::new(), stderr: String::new() }
-                }
-            };
-
-            // Restore default SIGINT handling
-            unsafe {
-                libc::signal(libc::SIGINT, libc::SIG_DFL);
-                // Reclaim the Arc to avoid leak
-                if !SIGINT_FLAG.is_null() {
-                    let _ = Arc::from_raw(SIGINT_FLAG as *const AtomicBool);
-                    SIGINT_FLAG = std::ptr::null_mut();
                 }
             }
+            DispatchMessage::Request { idx, line, result_tx } => {
+                if fatal.load(Ordering::Relaxed) {
+                    break;
+                }
 
-            if let Some(s) = spinner {
-                s.finish_and_clear();
-                eprint!("\x1b[?25h");
+                let spinner = if interactive {
+                    let s = ProgressBar::new_spinner();
+                    s.set_style(
+                        ProgressStyle::default_spinner()
+                            .template("  {spinner} \x1b[2mrequest {msg}...\x1b[0m")
+                            .unwrap(),
+                    );
+                    s.set_message(format!("{idx}"));
+                    eprint!("\x1b[?25l");
+                    s.enable_steady_tick(std::time::Duration::from_millis(80));
+                    Some(s)
+                } else {
+                    None
+                };
+
+                // Create oneshot for interactive mode (to get output back)
+                let (output_tx, output_rx) = if result_tx.is_some() {
+                    let (tx, rx) = tokio::sync::oneshot::channel::<OutputResult>();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
+
+                let handle = spawn_request(
+                    line,
+                    client.clone(),
+                    config.load_full(),
+                    Arc::clone(&global_sem),
+                    Arc::clone(&rule_sems),
+                    Arc::clone(&stdout_lock),
+                    Arc::clone(&stderr_lock),
+                    progress_bar.clone(),
+                    stderr_suppressed.clone(),
+                    warn_bar.clone(),
+                    Arc::clone(&cache_stores),
+                    idx,
+                    concurrent,
+                    yaml_mode,
+                    Arc::clone(&fatal),
+                    output_tx,
+                );
+
+                if let Some(rtx) = result_tx {
+                    // Interactive: track in-flight, await result, send back
+                    in_flight = Some((idx, handle));
+
+                    // Spawn a task to await the result and send it back
+                    let spinner_clone = spinner;
+                    tokio::spawn(async move {
+                        let result = if let Some(orx) = output_rx {
+                            orx.await.unwrap_or(OutputResult { stdout: String::new(), stderr: String::new() })
+                        } else {
+                            OutputResult { stdout: String::new(), stderr: String::new() }
+                        };
+
+                        if let Some(s) = spinner_clone {
+                            s.finish_and_clear();
+                            eprint!("\x1b[?25h");
+                        }
+
+                        rtx.send(result).ok();
+                    });
+                } else {
+                    // Batch: collect handle
+                    handles.push(handle);
+                }
             }
-
-            done_tx.send(result).ok();
-        } else {
-            // Batch: concurrent — collect handle, await all at end
-            handles.push(handle);
         }
     }
 
