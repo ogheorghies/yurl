@@ -19,13 +19,11 @@ b:
   title: sunt aut facere...
 ```
 
-Multiple requests with config:
+Multiple requests with upfront config:
 
 ```bash
-yurl '{api: httpbin.org, h: {a!: $TOKEN}, 1: "j(s b)"}' '
-{g: api!/get}
-{p: api!/post, b: {name: Owl, price: 5.99}}
-'
+yurl '{api: httpbin.org, h: {a!: $TOKEN}}' \
+     '{g: api!/get}' '{p: api!/post, b: {name: Owl, price: 5.99}}'
 ```
 
 Or pipe from stdin for large batches:
@@ -289,7 +287,8 @@ curl -X GET 'https://api.example.com/toys' \
 | Command | Description |
 |---|---|
 | `.step file` / `.s file` | load requests from file |
-| `.next` / `.n` | load next request, edit, Enter to send |
+| `.pop` / `.p` | pop next request, edit, Enter to send |
+| `.repop` | re-pop last popped request |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
 
 ```
@@ -299,9 +298,9 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.11.1
+yurl v0.12.0
 
-> .next                              # pre-fills with {g: api!/toys}
+> .pop                               # pops {g: api!/toys}, pre-fills
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged
 > {get: http://localhost:3000/toys, h: {Authorization: Bearer tok}, 1: j(s b)}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}

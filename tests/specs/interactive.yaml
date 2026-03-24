@@ -189,58 +189,58 @@
         print: {contains: "get:"}
         prefill: null
 
-# === .next / .go ===
+# === .pop / .go ===
 
-- name: .next reads from source
+- name: .pop reads from source
   source:
     - "{g: example.com}"
   interaction:
-    - user: ".next"
+    - user: ".pop"
       assert:
         prefill: "{g: example.com}"
 
-- name: .n shortcut
+- name: .p shortcut
   source:
     - "{g: example.com}"
   interaction:
-    - user: ".n"
+    - user: ".p"
       assert:
         prefill: "{g: example.com}"
 
-- name: .next exhausted source
+- name: .pop exhausted source
   source: []
   interaction:
-    - user: ".next"
+    - user: ".pop"
       assert:
         print: {contains: "no more"}
 
-- name: .next without source
+- name: .pop without source
   interaction:
-    - user: ".next"
+    - user: ".pop"
       assert:
         print: {contains: "no more"}
 
-- name: .next shows error from source
+- name: .pop shows error from source
   source:
     - Err: "bad yaml"
   interaction:
-    - user: ".next"
+    - user: ".pop"
       assert:
         print: {contains: "bad yaml"}
         prefill: null
 
-- name: .next reads lazily
+- name: .pop reads lazily
   source:
     - "{g: first.com}"
     - "{g: second.com}"
   interaction:
-    - user: ".next"
+    - user: ".pop"
       assert:
         prefill: "{g: first.com}"
     - user: ctrl-c
       assert:
         prefill: null
-    - user: ".next"
+    - user: ".pop"
       assert:
         prefill: "{g: second.com}"
 
@@ -280,6 +280,43 @@
       assert:
         execute: {contains: "a.com"}
         print: {contains: "bad yaml"}
+
+# === .repop ===
+
+- name: .repop recalls last popped
+  source:
+    - "{g: first.com}"
+    - "{g: second.com}"
+  interaction:
+    - user: ".pop"
+      assert:
+        prefill: "{g: first.com}"
+    - user: ctrl-c
+      assert:
+        prefill: null
+    - user: ".repop"
+      assert:
+        prefill: "{g: first.com}"
+
+- name: .repop without prior pop
+  interaction:
+    - user: ".repop"
+      assert:
+        print: {contains: "nothing to repop"}
+
+- name: .repop after execute still recalls
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: ".pop"
+      assert:
+        prefill: "{g: example.com}"
+    - user: "{g: example.com}"
+      assert:
+        execute: "{g: example.com}"
+    - user: ".repop"
+      assert:
+        prefill: "{g: example.com}"
 
 # === .step ===
 
@@ -496,14 +533,14 @@
       assert:
         prefill: ".help"
 
-- name: .next in history
+- name: .pop in history
   source:
     - "{g: example.com}"
   interaction:
     - user: "{g: first.com}"
       assert:
         execute: "{g: first.com}"
-    - user: ".next"
+    - user: ".pop"
       assert:
         prefill: "{g: example.com}"
     - user: ctrl-c
@@ -511,7 +548,7 @@
         prefill: null
     - user: up
       assert:
-        prefill: ".next"
+        prefill: ".pop"
 
 - name: YAML first line in history
   interaction:

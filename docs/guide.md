@@ -204,12 +204,13 @@ The `-i` flag enables interactive debugging of piped requests. You can also load
 cat requests.yaml | yurl -i '{api: api.example.com/v1, h: {a!: my-token}}'
 ```
 
-This enters the REPL with piped requests available via `.next`/`.go`. Commands:
+This enters the REPL with piped requests available via `.pop`/`.go`. Commands:
 
 - **`.step file`** (`.s file`) — loads requests from a file for stepping through.
-- **`.next`** (`.n`) — loads the next request into the editor for review/edit. Press Enter to send, Ctrl-C to skip.
+- **`.pop`** (`.p`) — pops the next request from the queue, pre-fills for editing. Enter to send, Ctrl-C to discard.
+- **`.repop`** — re-pops the last popped request (e.g. after Ctrl-C discard).
 - **`.go`** (`.g`) — executes all remaining requests. Ctrl-C breaks back to the prompt.
-- **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.next`: press Ctrl-A and prepend `.x ` to expand a queued request.
+- **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.pop`: press Ctrl-A and prepend `.x ` to expand a queued request.
 - **`.c`** — shows the current config summary. **`.c {config}`** replaces the active config. Subsequent requests and `.x` expansions use the new config.
 - **`.help`** (`.h`) — shows help.
 
@@ -229,7 +230,7 @@ yurl v0.5.0
 > .c
   config: api: api | h: 1 header | output: 1
 
-> .next                              # pre-fills with {g: api!/toys}
+> .pop                               # pops {g: api!/toys}, pre-fills
 > .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
 > {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s b)"}
 {"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}

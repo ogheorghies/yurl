@@ -36,7 +36,7 @@ impl Hinter for YurlHelper {
     fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
         if line.is_empty() {
             let hint = if self.has_source {
-                "type .next — .help, .t, or .ref"
+                "type .pop — .help, .t, or .ref"
             } else {
                 "type request — .help, .t, or .ref"
             };

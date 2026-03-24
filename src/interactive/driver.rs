@@ -8,7 +8,7 @@ use crate::OutputResult;
 use crate::{StdinReader, expand_with_flags, ExpandFlags};
 use super::help;
 
-/// A lazy source of documents for .next/.go.
+/// A lazy source of documents for .pop/.go.
 /// Returns `None` when exhausted, `Some(Ok(json))` for valid documents,
 /// `Some(Err(e))` for parse errors.
 pub type StdinSource = Box<dyn FnMut() -> Option<Result<String, RequestError>>>;
@@ -90,6 +90,8 @@ pub struct Driver {
     request_in_flight: Option<usize>,
     /// Counter for assigning request IDs.
     next_request_id: usize,
+    /// Last popped request — for .repop.
+    last_popped: Option<String>,
 }
 
 impl Driver {
@@ -108,6 +110,7 @@ impl Driver {
             yaml_buf: None,
             request_in_flight: None,
             next_request_id: 0,
+            last_popped: None,
         }
     }
 
@@ -278,9 +281,14 @@ impl Driver {
             return vec![Effect::Print(help::TEMPLATES.to_string())];
         }
 
-        // .next
-        if trimmed == ".next" || trimmed == ".n" {
-            return self.handle_next();
+        // .pop
+        if trimmed == ".pop" || trimmed == ".p" {
+            return self.handle_pop();
+        }
+
+        // .repop
+        if trimmed == ".repop" {
+            return self.handle_repop();
         }
 
         // .c — config
@@ -310,7 +318,7 @@ impl Driver {
         // .step — load requests from file
         if trimmed == ".step" || trimmed == ".s" {
             if self.stdin_source.is_some() {
-                return vec![Effect::Print("  source already loaded — use .next or .go".to_string())];
+                return vec![Effect::Print("  source already loaded — use .pop or .go".to_string())];
             }
             return vec![Effect::Print("  usage: .step file.yaml".to_string())];
         }
@@ -404,13 +412,14 @@ impl Driver {
         Some(effects)
     }
 
-    fn handle_next(&mut self) -> Vec<Effect> {
+    fn handle_pop(&mut self) -> Vec<Effect> {
         let source = match &mut self.stdin_source {
             Some(s) => s,
             None => return vec![Effect::Print("  no more requests".to_string())],
         };
         match source() {
             Some(Ok(req)) => {
+                self.last_popped = Some(req.clone());
                 self.prefill = Some(req.clone());
                 vec![Effect::Prefill(req)]
             }
@@ -419,6 +428,19 @@ impl Driver {
             }
             None => {
                 vec![Effect::Print("  no more requests".to_string())]
+            }
+        }
+    }
+
+    fn handle_repop(&mut self) -> Vec<Effect> {
+        match &self.last_popped {
+            Some(req) => {
+                let req = req.clone();
+                self.prefill = Some(req.clone());
+                vec![Effect::Prefill(req)]
+            }
+            None => {
+                vec![Effect::Print("  nothing to repop".to_string())]
             }
         }
     }

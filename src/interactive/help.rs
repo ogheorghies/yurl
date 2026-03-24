@@ -76,7 +76,8 @@ pub fn help_text(history_path: &Option<String>) -> String {
   {c}               show current config\n\
   {c}  {{cfg}}        replace active config\n\
   {step} {sdot}   load requests from file\n\
-  {next}  {ndot}   load next request, edit, Enter to send\n\
+  {pop}   {pdot}   pop next request, edit, Enter to send\n\
+  {repop}          re-pop last popped request\n\
   {go}    {gdot}   run remaining requests, Ctrl-C to stop\n\
   {t}               show request templates\n\
   {r}  {rdot}         show reference card\n\
@@ -88,7 +89,8 @@ pub fn help_text(history_path: &Option<String>) -> String {
         help_x = style(".help x").bold(),
         c = style(".c").bold(),
         step = style(".step file").bold(), sdot = style(".s").dim(),
-        next = style(".next").bold(), ndot = style(".n").dim(),
+        pop = style(".pop").bold(), pdot = style(".p").dim(),
+        repop = style(".repop").bold(),
         go = style(".go").bold(), gdot = style(".g").dim(),
         t = style(".t").bold(),
         r = style(".ref").bold(), rdot = style(".r").dim(),
