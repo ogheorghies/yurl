@@ -402,23 +402,6 @@ fn render_curl(method: &str, url: &str, headers: &Map<String, Value>, body: &Opt
 }
 
 /// Legacy resolve_request — used by execute(). Always merges config.
-fn resolve_request<'a>(line: &str, config: &'a Config) -> Result<(
-    &'a str,                       // method
-    String,                        // url (with API alias expanded)
-    Option<Value>,                 // query
-    Map<String, Value>,            // merged headers
-    Option<Value>,                 // body
-    Option<Value>,                 // md
-    Vec<(String, String)>,         // outputs
-), RequestError> {
-    let (method, url, query, req_headers, body, md, outputs) =
-        parse_request_fields(line, config)?;
-    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
-    Ok((method, url, query, merged_headers, body, md, outputs))
-}
-
-// Old expand_request / expand_request_structured / preview_request_* functions
-// are replaced by expand_with_flags(). See ExpandFlags for the composable modifier system.
 
 /// Serialize a serde_json::Value as multiline block YAML.
 fn to_yaml_block(val: &Value, indent: usize) -> String {
@@ -1332,8 +1315,8 @@ async fn main() {
             let bridge_handle = std::thread::spawn(move || {
                 while let Ok(msg) = repl_rx.recv() {
                     match msg {
-                        interactive::ReplMessage::Request { id: _, line } => {
-                            let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
+                        interactive::ReplMessage::Request { id, line } => {
+                            let idx = id;
                             bridge_tx.blocking_send(DispatchMessage::Request {
                                 idx,
                                 line,

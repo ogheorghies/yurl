@@ -318,31 +318,25 @@
       assert:
         prefill: "{g: example.com}"
 
-# === .step ===
+# === .open ===
 
-- name: .step no args shows usage
+- name: .open no args shows usage
   interaction:
-    - user: ".step"
+    - user: ".open"
       assert:
         print: {contains: "usage"}
 
-- name: .s shortcut
-  interaction:
-    - user: ".s"
-      assert:
-        print: {contains: "usage"}
-
-- name: .step with existing source
+- name: .open with existing source
   source:
     - "{g: example.com}"
   interaction:
-    - user: ".step"
+    - user: ".open"
       assert:
         print: {contains: "already loaded"}
 
-- name: .step missing file
+- name: .open missing file
   interaction:
-    - user: ".step /nonexistent/file.yaml"
+    - user: ".open /nonexistent/file.yaml"
       assert:
         print: {contains: "error"}
 

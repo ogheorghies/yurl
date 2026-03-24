@@ -16,6 +16,7 @@ pub type StdinSource = Box<dyn FnMut() -> Option<Result<String, RequestError>>>;
 
 /// Input events — from the user or the system.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]  // Up/Down constructed in test specs
 pub enum Input {
     /// User typed text and pressed Enter.
     Text(String),
@@ -315,16 +316,16 @@ impl Driver {
             };
         }
 
-        // .step — load requests from file
-        if trimmed == ".step" || trimmed == ".s" {
+        // .open — load requests from file
+        if trimmed == ".open" {
             if self.stdin_source.is_some() {
                 return vec![Effect::Print("  source already loaded — use .pop or .go".to_string())];
             }
-            return vec![Effect::Print("  usage: .step file.yaml".to_string())];
+            return vec![Effect::Print("  usage: .open file.yaml".to_string())];
         }
-        if let Some(path) = trimmed.strip_prefix(".step ").or_else(|| trimmed.strip_prefix(".s ")) {
+        if let Some(path) = trimmed.strip_prefix(".open ") {
             let path = path.trim();
-            return self.handle_step(path);
+            return self.handle_open(path);
         }
 
         // .x — expand with composable flags
@@ -476,7 +477,7 @@ impl Driver {
         effects
     }
 
-    fn handle_step(&mut self, path: &str) -> Vec<Effect> {
+    fn handle_open(&mut self, path: &str) -> Vec<Effect> {
         let file = match std::fs::File::open(path) {
             Ok(f) => f,
             Err(e) => return vec![Effect::Print(format!("  error: {e}: {path}"))],
@@ -484,7 +485,7 @@ impl Driver {
         let reader = BufReader::new(file);
         let mut stdin_reader = StdinReader::new(reader);
         self.stdin_source = Some(Box::new(move || stdin_reader.next()));
-        vec![Effect::Print(format!("  loaded {path}"))]
+        vec![Effect::Print(format!("  opened {path}"))]
     }
 
     fn add_history(&mut self, entry: &str) {

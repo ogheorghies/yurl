@@ -3,7 +3,7 @@
 HTTP client — [batch](#batch-config), [interactive](#interactive-mode), [concurrent](#concurrency), [streaming](#concurrency), [output routing](#output), [caching](#caching), [fast](#performance).
 Built on [`yttp`](https://crates.io/crates/yttp), tested with [`mockinx`](https://crates.io/crates/mockinx).
 
-[Guide](docs/guide.md) · [Cookbook](docs/cookbook.md)
+[Guide](docs/guide.md) · [Interactive](docs/interactive.md) · [Cookbook](docs/cookbook.md)
 
 Install: `cargo install yurl`
 
@@ -282,11 +282,11 @@ curl -X GET 'https://api.example.com/toys' \
 
 #### Interactive mode
 
-`-i` flag for interactive debugging of piped requests. Or use `.step file.yaml` to load from a file mid-session. See [Guide](docs/guide.md#step-mode) for full walkthrough.
+`-i` flag for interactive debugging of piped requests. Or use `.open file.yaml` to load from a file mid-session. See [Interactive Guide](docs/interactive.md) for full walkthrough.
 
 | Command | Description |
 |---|---|
-| `.step file` / `.s file` | load requests from file |
+| `.open file` | open requests from file |
 | `.pop` / `.p` | pop next request, edit, Enter to send |
 | `.repop` | re-pop last popped request |
 | `.go` / `.g` | run all remaining, Ctrl-C to stop |
@@ -298,7 +298,7 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.12.0
+yurl v0.13.0
 
 > .pop                               # pops {g: api!/toys}, pre-fills
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged

@@ -58,6 +58,27 @@ pub fn reference_card() -> String {
     )
 }
 
+macro_rules! b { ($s:expr) => { style($s).bold() } }
+macro_rules! d { ($s:expr) => { style($s).dim() } }
+
+macro_rules! row {
+    ([$($part:expr),*], $desc:expr) => {{
+        let parts: Vec<(String, usize)> = vec![
+            $({
+                let s = $part;
+                let displayed = s.to_string();
+                // Strip ANSI codes to get visible length
+                let visible = console::strip_ansi_codes(&displayed).len();
+                (displayed, visible)
+            }),*
+        ];
+        let styled: String = parts.iter().map(|(s, _)| s.as_str()).collect();
+        let visible_len: usize = parts.iter().map(|(_, l)| l).sum();
+        let pad = 20usize.saturating_sub(visible_len).max(1);
+        format!("  {styled}{:pad$}{}", "", $desc)
+    }};
+}
+
 pub fn help_text(history_path: &Option<String>) -> String {
     let history_line = history_path
         .as_deref()
@@ -70,33 +91,22 @@ pub fn help_text(history_path: &Option<String>) -> String {
             format!("\nHistory: {display}\n")
         })
         .unwrap_or_default();
-    format!("\n\
-  {{request}}            send a JSON/YAML request\n\
-  {x} {flags} {{req}}   expand — {help_x} for flag reference\n\
-  {c}               show current config\n\
-  {c}  {{cfg}}        replace active config\n\
-  {step} {sdot}   load requests from file\n\
-  {pop}   {pdot}   pop next request, edit, Enter to send\n\
-  {repop}          re-pop last popped request\n\
-  {go}    {gdot}   run remaining requests, Ctrl-C to stop\n\
-  {t}               show request templates\n\
-  {r}  {rdot}         show reference card\n\
-  {help}  {hdot}        show this help\n\
-  {ctrl_d}           exit\n\
-{history_line}\n",
-        x = style(".x").bold(),
-        flags = style("[flags]").dim(),
-        help_x = style(".help x").bold(),
-        c = style(".c").bold(),
-        step = style(".step file").bold(), sdot = style(".s").dim(),
-        pop = style(".pop").bold(), pdot = style(".p").dim(),
-        repop = style(".repop").bold(),
-        go = style(".go").bold(), gdot = style(".g").dim(),
-        t = style(".t").bold(),
-        r = style(".ref").bold(), rdot = style(".r").dim(),
-        help = style(".help").bold(), hdot = style(".h").dim(),
-        ctrl_d = style("Ctrl-D").bold(),
-    )
+
+    let lines = [
+        row!(["{request}"],                            "send a JSON/YAML request"),
+        row!([b!(".x"), " ", d!("mvjcs"), " {req}"],   format!("expand — {} for flags", b!(".help x"))),
+        row!([b!(".c")],                               "show current config"),
+        row!([b!(".c"), " {cfg}"],                     "replace active config"),
+        row!([b!(".open file")],                       "open requests from file"),
+        row!([b!(".pop"), " ", d!(".p")],              "pop next request, edit, Enter to send"),
+        row!([b!(".repop")],                           "re-pop last popped request"),
+        row!([b!(".go"), " ", d!(".g")],               "run remaining, Ctrl-C to stop"),
+        row!([b!(".t")],                               "show request templates"),
+        row!([b!(".ref"), " ", d!(".r")],              "show reference card"),
+        row!([b!(".help"), " ", d!(".h")],             "show this help"),
+        row!([b!("Ctrl-D")],                           "exit"),
+    ];
+    format!("\n{}\n{history_line}\n", lines.join("\n"))
 }
 
 pub fn expand_help() -> String {
@@ -104,24 +114,24 @@ pub fn expand_help() -> String {
 {title}
 
   Dimension    Options                   Default
-  Resolution   {m} merged                unmerged
-  Layout       {v} vertical (multiline) / {h} horizontal (flow)  horizontal
-  Format       {c} curl / {j} JSON       YAML
-  Headers      {s} short (yttp shortcuts) standard
+  Resolution   {m} merged with config      unmerged
+  Layout       {v} vert. / {h} horiz.        horizontal
+  Format       {c} curl / {j} JSON           YAML
+  Headers      {s} shortcuts per yttp      HTTP expanded
 
-  Flags compose freely. Flow pre-fills prompt for editing.
-  Multiline and curl print to screen.
+  Horizontal: single line (prompt edit)
+  Vertical  : multiline, indented (print only, technical limitation)
 
-  .x {{req}}         YAML flow (edit)
-  .x {m} {{req}}       merged (edit)
-  .x {v} {{req}}       YAML multiline (print)
-  .x {m}{v} {{req}}      merged multiline (print)
-  .x {j} {{req}}       JSON flow (edit)
-  .x {j}{v} {{req}}      JSON multiline (print)
-  .x {c} {{req}}       curl flow (print)
-  .x {v}{c} {{req}}      curl multiline (print)
-  .x {m}{s} {{req}}      merged, short headers (edit)
-  .x {m}{v}{s} {{req}}     merged, multiline, short (print)\n",
+  .x     {{req}}    YAML horizontal
+  .x {m}   {{req}}    YAML horizontal, merged w/ config
+  .x {v}   {{req}}    YAML vertical
+  .x {m}{v}  {{req}}    YAML merged, vertical
+  .x {m}{s}  {{req}}    YAML merged, short yttp, horizontal
+  .x {m}{s}{v} {{req}}    YAML merged, short yttp, vertical
+  .x {j}   {{req}}    JSON horizontal
+  .x {j}{v}  {{req}}    JSON vertical
+  .x {c}   {{req}}    curl horizontal
+  .x {c}{v}  {{req}}    curl vertical\n",
         title = style(".x [flags] {request}").bold(),
         m = style("m").bold(),
         v = style("v").bold(),

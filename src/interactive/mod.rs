@@ -69,7 +69,7 @@ const EXAMPLE: &str = "{g: https://httpbin.org/get}";
 
 /// Read requests interactively. Calls `on_request` for each complete request string.
 /// `config` is shared via ArcSwap — `.x` reads it, `.c` replaces it.
-/// If `stdin_source` is Some, enables .next and .go commands for stepping through piped requests.
+/// If `stdin_source` is Some, enables .pop and .go commands for iterating through requests.
 use crate::OutputResult;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -208,7 +208,7 @@ pub fn run(
             let cancelled_ptr = Arc::into_raw(Arc::clone(&cancelled)) as *mut std::ffi::c_void;
             unsafe {
                 POLL_SIGINT_FLAG = cancelled_ptr;
-                libc::signal(libc::SIGINT, poll_sigint_handler as libc::sighandler_t);
+                libc::signal(libc::SIGINT, poll_sigint_handler as *const () as libc::sighandler_t);
             }
 
             loop {

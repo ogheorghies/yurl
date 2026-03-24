@@ -196,56 +196,9 @@ Use `name!/path` in request URLs:
 
 If `name` doesn't match any alias, the URL is used unchanged.
 
-## Step Mode
+## Interactive Mode
 
-The `-i` flag enables interactive debugging of piped requests. You can also load requests from a file mid-session with `.step file.yaml`.
-
-```
-cat requests.yaml | yurl -i '{api: api.example.com/v1, h: {a!: my-token}}'
-```
-
-This enters the REPL with piped requests available via `.pop`/`.go`. Commands:
-
-- **`.step file`** (`.s file`) — loads requests from a file for stepping through.
-- **`.pop`** (`.p`) — pops the next request from the queue, pre-fills for editing. Enter to send, Ctrl-C to discard.
-- **`.repop`** — re-pops the last popped request (e.g. after Ctrl-C discard).
-- **`.go`** (`.g`) — executes all remaining requests. Ctrl-C breaks back to the prompt.
-- **`.x {request}`** — expands a request with full config resolution (API aliases, header shortcuts, env vars, rule merging) and presents the result for review. Press Enter to send, Ctrl-C to discard. Combine with `.pop`: press Ctrl-A and prepend `.x ` to expand a queued request.
-- **`.c`** — shows the current config summary. **`.c {config}`** replaces the active config. Subsequent requests and `.x` expansions use the new config.
-- **`.help`** (`.h`) — shows help.
-
-You can also type ad-hoc requests at any time.
-
-Example session:
-
-```
-$ echo '
-{g: api!/toys}
-{g: api!/toys/1}
-{p: api!/toys, b: {name: Owl}}
-' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
-
-yurl v0.5.0
-
-> .c
-  config: api: api | h: 1 header | output: 1
-
-> .pop                               # pops {g: api!/toys}, pre-fills
-> .x {g: api!/toys}                  # Ctrl-A, prepend .x to expand
-> {"get":"http://localhost:3000/toys","h":{"Authorization":"Bearer tok"},"1":"j(s b)"}
-{"s":"200 OK","b":[{"id":1,"name":"Fox"},{"id":2,"name":"Cat"}]}
-
-> .go                                # run remaining 2 requests
-{"s":"200 OK","b":{"id":1,"name":"Fox","price":12.99}}
-{"s":"201 Created","b":{"id":3,"name":"Owl"}}
-  2 requests executed
-
-> .c {api: {s: staging.example.com}}
-  config: api: s
-
-> {g: s!/toys}                       # ad-hoc request with new config
-{"s":"200 OK","b":[...]}
-```
+See the [Interactive Mode Guide](interactive.md) for the full tutorial — `.pop`, `.repop`, `.x` expansion, `.c` config, `.go` batch execution, Ctrl-C cancellation, and workflow examples.
 
 ## Concurrency and Streaming
 
