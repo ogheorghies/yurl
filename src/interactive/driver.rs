@@ -422,7 +422,19 @@ mod tests {
         config: Option<String>,
         #[serde(default)]
         source: Vec<serde_json::Value>,
+        /// Mock responses: when Effect::Execute is produced, the next mock response
+        /// is used as the OutputResult. Maps request substring to (stdout, stderr).
+        #[serde(default)]
+        mock_responses: std::collections::HashMap<String, MockResponse>,
         interaction: Vec<Interaction>,
+    }
+
+    #[derive(serde::Deserialize, Clone)]
+    struct MockResponse {
+        #[serde(default)]
+        stdout: String,
+        #[serde(default)]
+        stderr: String,
     }
 
     #[derive(serde::Deserialize)]
@@ -447,6 +459,10 @@ mod tests {
         exit: Option<bool>,
         #[serde(default)]
         no_effect: Option<bool>,
+        /// Display assertion: checks the OutputResult from mock executor.
+        /// Asserts on the stdout portion of the response display.
+        #[serde(default, deserialize_with = "deser_effect_assert")]
+        display: Option<EffectAssert>,
     }
 
     #[derive(Debug)]
@@ -615,6 +631,29 @@ mod tests {
         }
     }
 
+    /// Check display assertion against mock response output.
+    fn assert_display(ctx: &str, assertion: &EffectAssert, output: &crate::OutputResult) {
+        let combined = format!("{}{}", output.stdout, output.stderr);
+        match assertion {
+            EffectAssert::Exact(exact) => {
+                assert_eq!(combined.trim(), exact.as_str(),
+                    "{ctx}: display expected {exact:?}, got {combined:?}");
+            }
+            EffectAssert::Contains(sub) => {
+                assert!(combined.contains(sub.as_str()),
+                    "{ctx}: display should contain {sub:?}, got {combined:?}");
+            }
+            EffectAssert::NotContains(sub) => {
+                assert!(!combined.contains(sub.as_str()),
+                    "{ctx}: display should NOT contain {sub:?}, got {combined:?}");
+            }
+            EffectAssert::Null => {
+                assert!(combined.trim().is_empty(),
+                    "{ctx}: display should be empty, got {combined:?}");
+            }
+        }
+    }
+
     #[test]
     fn interactive_specs() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/specs/interactive.yaml");
@@ -629,6 +668,36 @@ mod tests {
                 let input = parse_user_input(&step.user);
                 let effects = driver.handle_input(input);
                 assert_effects(&spec.name, i, &step.user, &effects, &step.assertions);
+
+                // Check display assertion against mock responses
+                if let Some(ref display_assert) = step.assertions.display {
+                    // Find the Execute effect and look up mock response
+                    let exec_line = effects.iter().find_map(|e| match e {
+                        Effect::Execute(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                    if let Some(ref line) = exec_line {
+                        // Find matching mock response
+                        let mock = spec.mock_responses.iter()
+                            .find(|(key, _)| line.contains(key.as_str()))
+                            .map(|(_, v)| v);
+                        if let Some(resp) = mock {
+                            let result = crate::OutputResult {
+                                stdout: resp.stdout.clone(),
+                                stderr: resp.stderr.clone(),
+                            };
+                            assert_display(
+                                &format!("[{}] step {i} (user: {:?})", spec.name, step.user),
+                                display_assert,
+                                &result,
+                            );
+                        } else {
+                            panic!("[{}] step {i}: display assertion but no mock_response matching {line:?}", spec.name);
+                        }
+                    } else {
+                        panic!("[{}] step {i}: display assertion but no Execute effect", spec.name);
+                    }
+                }
             }
         }
     }

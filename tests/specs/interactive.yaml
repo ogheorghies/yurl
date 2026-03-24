@@ -513,3 +513,48 @@
     - user: "{get: https://example.com}"
       assert:
         execute: "{get: https://example.com}"
+
+# === Display assertions (mock executor) ===
+
+- name: request displays mock response
+  mock_responses:
+    "example.com":
+      stdout: "HTTP/1.1 200 OK"
+      stderr: ""
+  interaction:
+    - user: "{g: example.com, 1: s}"
+      assert:
+        execute: {contains: "example.com"}
+        display: "HTTP/1.1 200 OK"
+
+- name: display contains substring
+  mock_responses:
+    "example.com":
+      stdout: '{"s":{"c":200,"t":"OK"},"b":{"hello":"world"}}'
+  interaction:
+    - user: "{g: example.com}"
+      assert:
+        execute: {contains: "example.com"}
+        display: {contains: "hello"}
+
+- name: error response displays on stderr
+  mock_responses:
+    "example.com":
+      stdout: ""
+      stderr: "connection refused"
+  interaction:
+    - user: "{g: example.com}"
+      assert:
+        execute: {contains: "example.com"}
+        display: {contains: "connection refused"}
+
+- name: display with config affecting output
+  config: '{1: "j(s.code)"}'
+  mock_responses:
+    "example.com":
+      stdout: '{"s":{"c":200}}'
+  interaction:
+    - user: "{g: example.com}"
+      assert:
+        execute: {contains: "example.com"}
+        display: {contains: "200"}

@@ -136,6 +136,30 @@ struct OutputBuffer {
     files: Vec<(String, Vec<u8>)>,
 }
 
+/// Result of executing a request, sent back through the done channel in interactive mode.
+/// Contains the formatted output that would be written to stdout/stderr/files.
+#[derive(Debug, Clone)]
+pub(crate) struct OutputResult {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl OutputResult {
+    fn from_buffer(buf: &OutputBuffer) -> Self {
+        OutputResult {
+            stdout: String::from_utf8_lossy(&buf.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&buf.stderr).to_string(),
+        }
+    }
+
+    fn from_error(msg: String) -> Self {
+        OutputResult {
+            stdout: String::new(),
+            stderr: msg,
+        }
+    }
+}
+
 fn path_has_unique_template(path: &str) -> bool {
     path.contains("{{idx}}")
 }
@@ -1158,7 +1182,10 @@ async fn main() {
 
     let fatal = Arc::new(AtomicBool::new(false));
 
-    // Spawn a request task and return its JoinHandle
+    // Spawn a request task and return its JoinHandle.
+    // If output_tx is Some, the formatted output is sent back instead of written directly
+    // (interactive mode — enables testable display effects).
+    // If output_tx is None, output is flushed directly to stdout/stderr/files (batch mode).
     let spawn_request = |line: String,
                          client: Client,
                          config: Arc<Config>,
@@ -1173,12 +1200,18 @@ async fn main() {
                          idx: usize,
                          concurrent: bool,
                          yaml_mode: bool,
-                         fatal: Arc<AtomicBool>| {
+                         fatal: Arc<AtomicBool>,
+                         output_tx: Option<tokio::sync::oneshot::Sender<OutputResult>>| {
         let pre_parsed = match pre_parse_for_matching(&line, &config.apis) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("{}", e.display_colored());
+                let msg = e.display_colored();
                 fatal.store(true, Ordering::Relaxed);
+                if let Some(tx) = output_tx {
+                    tx.send(OutputResult::from_error(msg)).ok();
+                } else {
+                    eprintln!("{msg}");
+                }
                 return tokio::spawn(async {});
             }
         };
@@ -1202,37 +1235,49 @@ async fn main() {
                     if e.is_user_error() {
                         fatal.store(true, Ordering::Relaxed);
                     }
-                    eprintln!("{}", e.display_colored());
+                    let msg = e.display_colored();
+                    if let Some(tx) = output_tx {
+                        tx.send(OutputResult::from_error(msg)).ok();
+                    } else {
+                        eprintln!("{msg}");
+                    }
                     return;
                 }
             };
-            let ends_newline = flush_output_locked(
-                buf,
-                &stdout_lock,
-                &stderr_lock,
-                stderr_suppressed.as_deref(),
-            );
 
-            // In interactive mode, ensure output ends with newline so
-            // the spinner/prompt don't overwrite the last line of output.
-            if io::stdout().is_terminal() {
-                if !ends_newline {
-                    let _lock = stdout_lock.lock().unwrap();
-                    let _ = io::stdout().write_all(b"\n");
+            if let Some(tx) = output_tx {
+                // Interactive: send output back for testable display
+                let result = OutputResult::from_buffer(&buf);
+                flush_output_locked(buf, &stdout_lock, &stderr_lock, stderr_suppressed.as_deref());
+                tx.send(result).ok();
+            } else {
+                // Batch: flush directly
+                let ends_newline = flush_output_locked(
+                    buf,
+                    &stdout_lock,
+                    &stderr_lock,
+                    stderr_suppressed.as_deref(),
+                );
+
+                if io::stdout().is_terminal() {
+                    if !ends_newline {
+                        let _lock = stdout_lock.lock().unwrap();
+                        let _ = io::stdout().write_all(b"\n");
+                    }
+                    let _ = io::stdout().flush();
                 }
-                let _ = io::stdout().flush();
-            }
 
-            if let Some(pb) = &progress_bar {
-                pb.inc(1);
-            }
-            if let Some(counter) = &stderr_suppressed {
-                let count = counter.load(Ordering::Relaxed);
-                if count > 0 {
-                    if let Some(wb) = &warn_bar {
-                        wb.set_message(format!(
-                            "⚠ {count} request(s) had stderr output, suppressed by progress"
-                        ));
+                if let Some(pb) = &progress_bar {
+                    pb.inc(1);
+                }
+                if let Some(counter) = &stderr_suppressed {
+                    let count = counter.load(Ordering::Relaxed);
+                    if count > 0 {
+                        if let Some(wb) = &warn_bar {
+                            wb.set_message(format!(
+                                "⚠ {count} request(s) had stderr output, suppressed by progress"
+                            ));
+                        }
                     }
                 }
             }
@@ -1261,7 +1306,7 @@ async fn main() {
     let channel_capacity = rule_slots.max(pipe_cfg.global_concurrency).max(1);
     drop(pipe_cfg);
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String, Option<std::sync::mpsc::SyncSender<()>>)>(channel_capacity);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, String, Option<std::sync::mpsc::SyncSender<OutputResult>>)>(channel_capacity);
 
     let interactive = (io::stdin().is_terminal() && !has_request_args) || args.interactive;
     let idx_counter_source = Arc::clone(&idx_counter);
@@ -1296,12 +1341,13 @@ async fn main() {
                 None
             };
 
-            // on_request callback: send request + done signal through the shared channel
+            // on_request callback: send request + done signal through the shared channel.
+            // Receives OutputResult back — the formatted response output.
             interactive::run(|line| {
                 let idx = idx_counter_source.fetch_add(1, Ordering::Relaxed);
-                let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
+                let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<OutputResult>(0);
                 tx.blocking_send((idx, line, Some(done_tx))).ok();
-                done_rx.recv().ok(); // block until request completes
+                done_rx.recv().ok(); // block until request completes; output already flushed
             }, &repl_config, stdin_source);
         })
     } else {
@@ -1360,6 +1406,15 @@ async fn main() {
             None
         };
 
+        // Interactive mode: create oneshot to receive output back from the spawned task.
+        // Batch mode: no oneshot, output flushed directly by the task.
+        let (output_tx, output_rx) = if done_signal.is_some() {
+            let (tx, rx) = tokio::sync::oneshot::channel::<OutputResult>();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
         let handle = spawn_request(
             line,
             client.clone(),
@@ -1376,10 +1431,11 @@ async fn main() {
             concurrent,
             yaml_mode,
             Arc::clone(&fatal),
+            output_tx,
         );
 
         if let Some(done_tx) = done_signal {
-            // Interactive: sequential — await this request, then unblock the REPL
+            // Interactive: await the request, get output, signal the REPL
             if let Err(e) = handle.await {
                 eprintln!("  request failed: {e}");
             }
@@ -1387,7 +1443,12 @@ async fn main() {
                 s.finish_and_clear();
                 eprint!("\x1b[?25h");
             }
-            done_tx.send(()).ok();
+            // Send output result back to the REPL thread
+            let result = output_rx
+                .unwrap()
+                .await
+                .unwrap_or_else(|_| OutputResult { stdout: String::new(), stderr: String::new() });
+            done_tx.send(result).ok();
         } else {
             // Batch: concurrent — collect handle, await all at end
             handles.push(handle);
