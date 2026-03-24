@@ -1,0 +1,515 @@
+# Interactive mode contract tests — drives the Driver directly.
+
+# === Direct request execution ===
+
+- name: JSON flow request executes
+  interaction:
+    - user: "{g: example.com}"
+      assert:
+        execute: "{g: example.com}"
+
+- name: empty input ignored
+  interaction:
+    - user: ""
+      assert:
+        no_effect: true
+
+- name: whitespace only ignored
+  interaction:
+    - user: "   "
+      assert:
+        no_effect: true
+
+# === Control keys ===
+
+- name: ctrl-d exits
+  interaction:
+    - user: ctrl-d
+      assert:
+        exit: true
+
+- name: ctrl-c clears prefill
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: ctrl-c
+      assert:
+        prefill: null
+
+# === .help / .ref / .t ===
+
+- name: .help shows help
+  interaction:
+    - user: ".help"
+      assert:
+        print: {contains: ".x"}
+
+- name: .h shortcut
+  interaction:
+    - user: ".h"
+      assert:
+        print: {contains: ".x"}
+
+- name: .ref shows reference
+  interaction:
+    - user: ".ref"
+      assert:
+        print: {contains: "Request"}
+
+- name: .r shortcut
+  interaction:
+    - user: ".r"
+      assert:
+        print: {contains: "Request"}
+
+- name: .t shows templates
+  interaction:
+    - user: ".t"
+      assert:
+        print: {contains: "GET"}
+
+# === .c — config ===
+
+- name: .c shows config
+  interaction:
+    - user: ".c"
+      assert:
+        print: {contains: "config:"}
+
+- name: .c replaces config
+  config: "{api: old.com}"
+  interaction:
+    - user: ".c {api: new.com}"
+      assert:
+        print: {contains: "api:"}
+
+- name: .c with invalid input
+  interaction:
+    - user: ".c {broken"
+      assert:
+        print: {contains: "error"}
+
+# === .x — expand ===
+
+- name: .x default horizontal YAML prefills
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+
+- name: .x vertical prints only
+  interaction:
+    - user: ".x v {g: example.com}"
+      assert:
+        print: {contains: "get:"}
+        prefill: null
+
+- name: .x json horizontal prefills
+  interaction:
+    - user: ".x j {g: example.com}"
+      assert:
+        prefill: {contains: '"get"'}
+
+- name: .x json vertical prints only
+  interaction:
+    - user: ".x jv {g: example.com}"
+      assert:
+        print: {contains: '"get"'}
+        prefill: null
+
+- name: .x curl prints only
+  interaction:
+    - user: ".x c {g: example.com}"
+      assert:
+        print: {contains: "curl"}
+        prefill: null
+
+- name: .x vertical curl has continuations
+  interaction:
+    - user: ".x vc {g: example.com, h: {a!: tok}}"
+      assert:
+        print: {contains: "\\"}
+
+- name: .x merged includes config headers
+  config: '{h: {X-From-Config: "yes"}}'
+  interaction:
+    - user: ".x m {g: example.com}"
+      assert:
+        prefill: {contains: "X-From-Config"}
+
+- name: .x unmerged excludes config headers
+  config: '{h: {X-From-Config: "yes"}}'
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {not_contains: "X-From-Config"}
+
+- name: .x merged short headers
+  config: '{h: {Authorization: "Bearer tok"}}'
+  interaction:
+    - user: ".x ms {g: example.com}"
+      assert:
+        prefill: {contains: "bearer!"}
+
+- name: .x merged vertical short
+  config: '{h: {Authorization: "Bearer tok"}}'
+  interaction:
+    - user: ".x mvs {g: example.com}"
+      assert:
+        print: {contains: "a!"}
+        prefill: null
+
+- name: .x invalid flag
+  interaction:
+    - user: ".x z {g: example.com}"
+      assert:
+        print: {contains: "unknown flag"}
+
+- name: .x mutually exclusive flags
+  interaction:
+    - user: ".x jc {g: example.com}"
+      assert:
+        print: {contains: "mutually exclusive"}
+
+- name: .x error reprompts with original
+  interaction:
+    - user: ".x {broken"
+      assert:
+        print: {contains: "invalid"}
+        prefill: {contains: ".x {broken"}
+
+- name: .x then re-expand vertical
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: ".x v {get: https://example.com}"
+      assert:
+        print: {contains: "get:"}
+        prefill: null
+
+# === .next / .go ===
+
+- name: .next reads from source
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: ".next"
+      assert:
+        prefill: "{g: example.com}"
+
+- name: .n shortcut
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: ".n"
+      assert:
+        prefill: "{g: example.com}"
+
+- name: .next exhausted source
+  source: []
+  interaction:
+    - user: ".next"
+      assert:
+        print: {contains: "no more"}
+
+- name: .next without source
+  interaction:
+    - user: ".next"
+      assert:
+        print: {contains: "no more"}
+
+- name: .next shows error from source
+  source:
+    - Err: "bad yaml"
+  interaction:
+    - user: ".next"
+      assert:
+        print: {contains: "bad yaml"}
+        prefill: null
+
+- name: .next reads lazily
+  source:
+    - "{g: first.com}"
+    - "{g: second.com}"
+  interaction:
+    - user: ".next"
+      assert:
+        prefill: "{g: first.com}"
+    - user: ctrl-c
+      assert:
+        prefill: null
+    - user: ".next"
+      assert:
+        prefill: "{g: second.com}"
+
+- name: .go executes all
+  source:
+    - "{g: a.com}"
+    - "{g: b.com}"
+    - "{g: c.com}"
+  interaction:
+    - user: ".go"
+      assert:
+        execute: {contains: "a.com"}
+        print: {contains: "3 requests"}
+
+- name: .g shortcut
+  source:
+    - "{g: a.com}"
+  interaction:
+    - user: ".g"
+      assert:
+        execute: {contains: "a.com"}
+
+- name: .go empty source
+  source: []
+  interaction:
+    - user: ".go"
+      assert:
+        print: {contains: "no more"}
+
+- name: .go stops on error
+  source:
+    - "{g: a.com}"
+    - Err: "bad yaml"
+    - "{g: c.com}"
+  interaction:
+    - user: ".go"
+      assert:
+        execute: {contains: "a.com"}
+        print: {contains: "bad yaml"}
+
+# === .step ===
+
+- name: .step no args shows usage
+  interaction:
+    - user: ".step"
+      assert:
+        print: {contains: "usage"}
+
+- name: .s shortcut
+  interaction:
+    - user: ".s"
+      assert:
+        print: {contains: "usage"}
+
+- name: .step with existing source
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: ".step"
+      assert:
+        print: {contains: "already loaded"}
+
+- name: .step missing file
+  interaction:
+    - user: ".step /nonexistent/file.yaml"
+      assert:
+        print: {contains: "error"}
+
+# === Multi-line YAML ===
+
+- name: YAML accumulates and executes on empty line
+  interaction:
+    - user: "g: example.com"
+      assert:
+        execute: null
+    - user: "h:"
+      assert:
+        execute: null
+    - user: ""
+      assert:
+        execute: {contains: "example.com"}
+
+- name: YAML terminated by ---
+  interaction:
+    - user: "g: example.com"
+      assert:
+        execute: null
+    - user: "---"
+      assert:
+        execute: {contains: "example.com"}
+
+- name: YAML aborted by ctrl-c
+  interaction:
+    - user: "g: example.com"
+      assert:
+        execute: null
+    - user: ctrl-c
+      assert:
+        no_effect: true
+
+# === History ===
+
+- name: up navigates history
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: "{g: second.com}"
+      assert:
+        execute: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: first.com}"
+
+- name: down navigates forward
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: "{g: second.com}"
+      assert:
+        execute: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: first.com}"
+    - user: down
+      assert:
+        prefill: "{g: second.com}"
+
+- name: down past end clears prompt
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: up
+      assert:
+        prefill: "{g: first.com}"
+    - user: down
+      assert:
+        prefill: ""
+
+- name: up on empty history
+  interaction:
+    - user: up
+      assert:
+        no_effect: true
+
+- name: new input resets history cursor
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: "{g: second.com}"
+      assert:
+        execute: "{g: second.com}"
+    - user: up
+      assert:
+        prefill: "{g: second.com}"
+    - user: ctrl-c
+      assert:
+        prefill: null
+    - user: "{g: third.com}"
+      assert:
+        execute: "{g: third.com}"
+    - user: up
+      assert:
+        prefill: "{g: third.com}"
+
+- name: .x in history stores original command
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: ctrl-c
+      assert:
+        prefill: null
+    - user: up
+      assert:
+        prefill: {contains: ".x {g:"}
+
+- name: .x with flags in history stores flags
+  interaction:
+    - user: ".x mv {g: example.com}"
+      assert:
+        print: {contains: "get:"}
+    - user: up
+      assert:
+        prefill: {contains: ".x mv"}
+
+- name: .c in history
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: ".c"
+      assert:
+        print: {contains: "config:"}
+    - user: up
+      assert:
+        prefill: ".c"
+
+- name: .help in history
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: ".help"
+      assert:
+        print: {contains: ".x"}
+    - user: up
+      assert:
+        prefill: ".help"
+
+- name: .next in history
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: "{g: first.com}"
+      assert:
+        execute: "{g: first.com}"
+    - user: ".next"
+      assert:
+        prefill: "{g: example.com}"
+    - user: ctrl-c
+      assert:
+        prefill: null
+    - user: up
+      assert:
+        prefill: ".next"
+
+- name: YAML first line in history
+  interaction:
+    - user: "g: example.com"
+      assert:
+        execute: null
+    - user: ""
+      assert:
+        execute: {contains: "example.com"}
+    - user: up
+      assert:
+        prefill: "g: example.com"
+
+# === Unknown commands ===
+
+- name: unknown dot command
+  interaction:
+    - user: ".foo"
+      assert:
+        print: {contains: "unknown command: .foo"}
+
+- name: .p is unknown
+  interaction:
+    - user: ".p {g: example.com}"
+      assert:
+        print: {contains: "unknown command"}
+
+# === Prefill edit flow ===
+
+- name: prefill edit executes directly
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: "{get: https://example.com}"
+      assert:
+        execute: "{get: https://example.com}"

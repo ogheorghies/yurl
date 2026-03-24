@@ -170,7 +170,7 @@ impl Driver {
 
     fn handle_prefill_edit(&mut self, trimmed: &str) -> Vec<Effect> {
         // Check if user prepended .x
-        if let Some(effects) = self.try_expand(trimmed) {
+        if let Some(effects) = self.try_expand_command(trimmed) {
             return effects;
         }
         // Otherwise execute the edited text
@@ -178,6 +178,25 @@ impl Driver {
     }
 
     fn handle_command(&mut self, trimmed: &str, raw: &str) -> Vec<Effect> {
+        // Multi-line YAML: start accumulating
+        if !trimmed.starts_with('.') && !trimmed.starts_with('{') {
+            self.add_history(raw);
+            let mut buf = raw.to_string();
+            buf.push('\n');
+            self.yaml_buf = Some(buf);
+            return vec![Effect::AddHistory(raw.to_string())];
+        }
+
+        // All other input goes to history immediately
+        self.add_history(raw);
+        let mut effects = vec![Effect::AddHistory(raw.to_string())];
+
+        let command_effects = self.dispatch_command(trimmed, raw);
+        effects.extend(command_effects);
+        effects
+    }
+
+    fn dispatch_command(&mut self, trimmed: &str, _raw: &str) -> Vec<Effect> {
         // .help / .help x
         if trimmed == ".help" || trimmed == ".h" {
             return vec![Effect::Print(help::help_text(&self.history_path))];
@@ -238,7 +257,7 @@ impl Driver {
         }
 
         // .x — expand with composable flags
-        if let Some(effects) = self.try_expand(trimmed) {
+        if let Some(effects) = self.try_expand_command(trimmed) {
             return effects;
         }
 
@@ -254,19 +273,7 @@ impl Driver {
         }
 
         // Single-line flow: starts with {
-        if trimmed.starts_with('{') {
-            self.add_history(raw);
-            return vec![
-                Effect::AddHistory(raw.to_string()),
-                Effect::Execute(raw.to_string()),
-            ];
-        }
-
-        // Multi-line YAML: start accumulating
-        let mut buf = raw.to_string();
-        buf.push('\n');
-        self.yaml_buf = Some(buf);
-        vec![] // wait for more input
+        vec![Effect::Execute(trimmed.to_string())]
     }
 
     fn handle_yaml_continuation(&mut self, input: Input) -> Vec<Effect> {
@@ -281,12 +288,7 @@ impl Driver {
                     if final_request.is_empty() {
                         return vec![];
                     }
-                    let history_entry = final_request.replace('\n', " ");
-                    self.add_history(&history_entry);
-                    vec![
-                        Effect::AddHistory(history_entry),
-                        Effect::Execute(final_request),
-                    ]
+                    vec![Effect::Execute(final_request)]
                 } else {
                     buf.push_str(&text);
                     buf.push('\n');
@@ -303,15 +305,12 @@ impl Driver {
     }
 
     /// Parse `.x [flags] {req}` — expand with composable modifier flags.
-    ///
-    /// Flags: m (merged), v (vertical), j (JSON), c (curl), s (short headers).
-    /// If output is horizontal (editable), pre-fills prompt. Otherwise prints.
-    fn try_expand(&mut self, input: &str) -> Option<Vec<Effect>> {
+    /// History is handled by the caller (handle_command).
+    fn try_expand_command(&mut self, input: &str) -> Option<Vec<Effect>> {
         let rest = input.strip_prefix(".x ")?;
         let rest = rest.trim();
         if rest.is_empty() { return Some(vec![]); }
 
-        // Parse optional flags: first token if it's all valid flag chars and doesn't start with {
         let (flags, req) = parse_flags_and_req(rest);
 
         let flags = match flags {
@@ -323,9 +322,7 @@ impl Driver {
 
         let result = expand_with_flags(req, &self.config.load(), &flags);
 
-        self.add_history(input);
-        let mut effects = vec![Effect::AddHistory(input.to_string())];
-
+        let mut effects = vec![];
         match result {
             Ok(output) => {
                 if flags.is_editable() {
@@ -413,533 +410,226 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    fn empty_driver() -> Driver {
-        let config = Arc::new(ArcSwap::from_pointee(Config::empty()));
-        Driver::new(config, None, None)
+    // ── YAML spec-driven interactive tests ─────────────────────────────
+    //
+    // Loads tests/specs/interactive.yaml and drives the Driver programmatically.
+    // Each spec defines a sequence of user inputs and expected effects.
+
+    #[derive(serde::Deserialize)]
+    struct InteractiveSpec {
+        name: String,
+        #[serde(default)]
+        config: Option<String>,
+        #[serde(default)]
+        source: Vec<serde_json::Value>,
+        interaction: Vec<Interaction>,
     }
 
-    fn step_driver(items: Vec<Result<&str, &str>>) -> Driver {
-        let config = Arc::new(ArcSwap::from_pointee(Config::empty()));
-        let mut queue: VecDeque<Result<String, RequestError>> = items
-            .into_iter()
-            .map(|r| match r {
-                Ok(s) => Ok(s.to_string()),
-                Err(msg) => Err(RequestError::Parse {
-                    input: msg.to_string(),
-                    line: None,
-                    column: None,
-                    msg: msg.to_string(),
-                }),
-            })
-            .collect();
-        let source: StdinSource = Box::new(move || queue.pop_front().map(|r| r));
-        Driver::new(config, Some(source), None)
+    #[derive(serde::Deserialize)]
+    struct Interaction {
+        user: String,
+        #[serde(default, rename = "assert")]
+        assertions: StepAssert,
     }
 
-    fn step_driver_ok(items: Vec<&str>) -> Driver {
-        step_driver(items.into_iter().map(Ok).collect())
+    #[derive(serde::Deserialize, Default)]
+    struct StepAssert {
+        /// Prefill assertion: string (exact), {contains: "sub"}, or null (cleared/absent)
+        #[serde(default, deserialize_with = "deser_effect_assert")]
+        prefill: Option<EffectAssert>,
+        /// Print assertion: string (exact), {contains: "sub"}
+        #[serde(default, deserialize_with = "deser_effect_assert")]
+        print: Option<EffectAssert>,
+        /// Execute assertion: string (exact), {contains: "sub"}
+        #[serde(default, deserialize_with = "deser_effect_assert")]
+        execute: Option<EffectAssert>,
+        #[serde(default)]
+        exit: Option<bool>,
+        #[serde(default)]
+        no_effect: Option<bool>,
     }
 
-    fn has_effect(effects: &[Effect], pred: impl Fn(&Effect) -> bool) -> bool {
-        effects.iter().any(pred)
+    #[derive(Debug)]
+    enum EffectAssert {
+        Exact(String),
+        Contains(String),
+        NotContains(String),
+        Null, // no such effect expected (e.g. prefill cleared)
     }
 
-    // --- Basic commands ---
+    fn deser_effect_assert<'de, D>(deserializer: D) -> Result<Option<EffectAssert>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
 
-    #[test]
-    fn direct_request_executes_and_records_history() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text("{g: example.com}".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(s) if s.contains("example.com"))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.contains("example.com"))));
+        struct Visitor;
+        impl<'de> de::Visitor<'de> for Visitor {
+            type Value = Option<EffectAssert>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("string, null, or {contains/not_contains: ...}")
+            }
+
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> { Ok(None) }
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> { Ok(Some(EffectAssert::Null)) }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Some(EffectAssert::Exact(v.to_string())))
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut result = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    let val: String = map.next_value()?;
+                    result = Some(match key.as_str() {
+                        "contains" => EffectAssert::Contains(val),
+                        "not_contains" => EffectAssert::NotContains(val),
+                        _ => return Err(de::Error::unknown_field(&key, &["contains", "not_contains"])),
+                    });
+                }
+                Ok(result)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
     }
 
-    #[test]
-    fn help_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".help".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains(".x"))));
+    fn parse_user_input(s: &str) -> Input {
+        match s {
+            "ctrl-c" => Input::CtrlC,
+            "ctrl-d" => Input::CtrlD,
+            "up" => Input::Up,
+            "down" => Input::Down,
+            text => Input::Text(text.to_string()),
+        }
     }
 
-    #[test]
-    fn help_shortcut() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".h".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(_))));
+    fn build_driver_from_spec(spec: &InteractiveSpec) -> Driver {
+        let config = if let Some(ref cfg_str) = spec.config {
+            match crate::parse_input(cfg_str) {
+                Ok(json) => Config::parse(&json),
+                Err(_) => Config::empty(),
+            }
+        } else {
+            Config::empty()
+        };
+        let config = Arc::new(ArcSwap::from_pointee(config));
+
+        let source: Option<StdinSource> = if spec.source.is_empty() {
+            None
+        } else {
+            let mut queue: VecDeque<Result<String, RequestError>> = spec
+                .source
+                .iter()
+                .map(|v| {
+                    if let Some(ok) = v.get("Ok").and_then(|v| v.as_str()) {
+                        Ok(ok.to_string())
+                    } else if let Some(err) = v.get("Err").and_then(|v| v.as_str()) {
+                        Err(RequestError::Parse {
+                            input: err.to_string(),
+                            line: None,
+                            column: None,
+                            msg: err.to_string(),
+                        })
+                    } else if let Some(s) = v.as_str() {
+                        // Plain string = Ok
+                        Ok(s.to_string())
+                    } else {
+                        panic!("invalid source item: {v}");
+                    }
+                })
+                .collect();
+            Some(Box::new(move || queue.pop_front()))
+        };
+
+        Driver::new(config, source, None)
     }
 
-    #[test]
-    fn ref_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".ref".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("Request"))));
+    fn check_effect_assert(ctx: &str, kind: &str, assertion: &EffectAssert, effects: &[Effect]) {
+        match assertion {
+            EffectAssert::Exact(exact) => {
+                let found = effects.iter().any(|e| match (kind, e) {
+                    ("prefill", Effect::Prefill(s)) => s == exact,
+                    ("print", Effect::Print(s)) => s.trim() == exact,
+                    ("execute", Effect::Execute(s)) => s == exact,
+                    _ => false,
+                });
+                assert!(found, "{ctx}: expected {kind}({exact:?}), got {effects:?}");
+            }
+            EffectAssert::Contains(sub) => {
+                let found = effects.iter().any(|e| match (kind, e) {
+                    ("prefill", Effect::Prefill(s)) => s.contains(sub.as_str()),
+                    ("print", Effect::Print(s)) => s.contains(sub.as_str()),
+                    ("execute", Effect::Execute(s)) => s.contains(sub.as_str()),
+                    _ => false,
+                });
+                assert!(found, "{ctx}: expected {kind} containing {sub:?}, got {effects:?}");
+            }
+            EffectAssert::NotContains(sub) => {
+                let found = effects.iter().any(|e| match (kind, e) {
+                    ("prefill", Effect::Prefill(s)) => s.contains(sub.as_str()),
+                    ("print", Effect::Print(s)) => s.contains(sub.as_str()),
+                    ("execute", Effect::Execute(s)) => s.contains(sub.as_str()),
+                    _ => false,
+                });
+                assert!(!found, "{ctx}: expected {kind} NOT containing {sub:?}, got {effects:?}");
+            }
+            EffectAssert::Null => {
+                let found = effects.iter().any(|e| match (kind, e) {
+                    ("prefill", Effect::Prefill(_)) => true,
+                    ("print", Effect::Print(_)) => true,
+                    ("execute", Effect::Execute(_)) => true,
+                    _ => false,
+                });
+                assert!(!found, "{ctx}: expected no {kind}, got {effects:?}");
+            }
+        }
     }
 
-    #[test]
-    fn ref_shortcut() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".r".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("Request"))));
-    }
+    fn assert_effects(name: &str, step: usize, user: &str, effects: &[Effect], assert: &StepAssert) {
+        let ctx = format!("[{name}] step {step} (user: {user:?})");
 
-    #[test]
-    fn templates_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".t".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("GET"))));
-    }
+        if assert.no_effect == Some(true) {
+            assert!(effects.is_empty(), "{ctx}: expected no effects, got {effects:?}");
+            return;
+        }
 
-    #[test]
-    fn config_show() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".c".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("config:"))));
-    }
+        if let Some(ref a) = assert.prefill {
+            check_effect_assert(&ctx, "prefill", a, effects);
+        }
 
-    #[test]
-    fn config_replace() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".c {api: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("api:"))));
-    }
+        if let Some(ref a) = assert.print {
+            check_effect_assert(&ctx, "print", a, effects);
+        }
 
-    #[test]
-    fn config_replace_invalid() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".c {broken".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
-    }
+        if let Some(ref a) = assert.execute {
+            check_effect_assert(&ctx, "execute", a, effects);
+        }
 
-    // --- Expand with flags ---
-
-    #[test]
-    fn expand_default_horizontal_yaml() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("get:"))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".x"))));
-        // History should NOT contain the expanded text
-        assert!(!has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.contains("get:"))));
-    }
-
-    #[test]
-    fn expand_vertical_prints() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x v {g: example.com}"#.into()));
-        // Vertical → prints, no prefill
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("get:"))));
-        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::AddHistory(s) if s.starts_with(".x v"))));
-    }
-
-    #[test]
-    fn expand_json_horizontal() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x j {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("\"get\""))));
-    }
-
-    #[test]
-    fn expand_json_vertical() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x jv {g: example.com}"#.into()));
-        // Pretty-printed JSON → prints (vertical)
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("\"get\""))));
-    }
-
-    #[test]
-    fn expand_curl_horizontal() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x c {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("curl"))));
-        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
-    }
-
-    #[test]
-    fn expand_curl_vertical() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x vc {g: example.com, h: {a!: tok}}"#.into()));
-        let effects_has_backslash = has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("\\")));
-        assert!(effects_has_backslash, "vertical curl should have backslash continuations");
-    }
-
-    #[test]
-    fn expand_merged() {
-        let config_json = yttp::parse(r#"{h: {X-From-Config: "yes"}}"#).unwrap();
-        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, None, None);
-        let effects = d.handle_input(Input::Text(r#".x m {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("X-From-Config"))));
-    }
-
-    #[test]
-    fn expand_unmerged_default() {
-        let config_json = yttp::parse(r#"{h: {X-From-Config: "yes"}}"#).unwrap();
-        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, None, None);
-        // Default (no m flag) should NOT include config headers
-        let effects = d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
-        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("X-From-Config"))));
-    }
-
-    #[test]
-    fn expand_flags_order_independent() {
-        let mut d = empty_driver();
-        let effects1 = d.handle_input(Input::Text(r#".x vm {g: example.com}"#.into()));
-        let mut d = empty_driver();
-        let effects2 = d.handle_input(Input::Text(r#".x mv {g: example.com}"#.into()));
-        // Both should produce Print (vertical) not Prefill
-        assert!(has_effect(&effects1, |e| matches!(e, Effect::Print(_))));
-        assert!(has_effect(&effects2, |e| matches!(e, Effect::Print(_))));
-    }
-
-    #[test]
-    fn expand_invalid_flag() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x z {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown flag"))));
-    }
-
-    #[test]
-    fn expand_mutually_exclusive_flags() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".x jc {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("mutually exclusive"))));
-    }
-
-    #[test]
-    fn expand_error_reprompts_with_original() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".x {broken".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(_))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains(".x {broken"))));
-    }
-
-    #[test]
-    fn expand_then_prepend_x_re_expands() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text(r#".x {g: example.com}"#.into()));
-        assert!(d.prefill.is_some());
-
-        let prefilled = d.prefill.clone().unwrap();
-        let edited = format!(".x v {}", &prefilled);
-        let effects = d.handle_input(Input::Text(edited));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(_))));
+        if assert.exit == Some(true) {
+            assert!(
+                effects.iter().any(|e| matches!(e, Effect::Exit)),
+                "{ctx}: expected Exit, got {effects:?}"
+            );
+        }
     }
 
     #[test]
-    fn prefill_edit_without_dot_command_executes() {
-        let mut d = empty_driver();
-        d.prefill = Some("{get: https://example.com}".into());
-        let effects = d.handle_input(Input::Text("{get: https://example.com}".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(s) if s.contains("example.com"))));
-    }
+    fn interactive_specs() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/specs/interactive.yaml");
+        let content = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
+        let specs: Vec<InteractiveSpec> = serde_yml::from_str(&content)
+            .unwrap_or_else(|e| panic!("failed to parse {path}: {e}"));
 
-    #[test]
-    fn p_is_unknown_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".p {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown command"))));
-    }
-
-    #[test]
-    fn xx_is_unknown_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(r#".xx {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown command"))));
-    }
-
-    #[test]
-    fn expand_short_headers() {
-        let config_json = yttp::parse(r#"{h: {Authorization: "Bearer tok"}}"#).unwrap();
-        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
-        let mut d = Driver::new(config, None, None);
-        let effects = d.handle_input(Input::Text(r#".x ms {g: example.com}"#.into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("a!") && s.contains("bearer!"))));
-    }
-
-    // --- Unknown commands ---
-
-    #[test]
-    fn unknown_dot_command() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".xj {g: example.com}".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown command"))));
-    }
-
-    #[test]
-    fn unknown_dot_command_no_args() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".foo".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("unknown command: .foo"))));
-    }
-
-    // --- Step mode ---
-
-    #[test]
-    fn next_reads_from_source() {
-        let mut d = step_driver_ok(vec!["{g: example.com}", "{g: other.com}"]);
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
-        // Ctrl-C to clear prefill, then second .next should get the second item
-        d.handle_input(Input::CtrlC);
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("other.com"))));
-    }
-
-    #[test]
-    fn next_shortcut() {
-        let mut d = step_driver_ok(vec!["{g: example.com}"]);
-        let effects = d.handle_input(Input::Text(".n".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
-    }
-
-    #[test]
-    fn next_empty_queue() {
-        let mut d = step_driver_ok(vec![]);
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
-    }
-
-    #[test]
-    fn go_executes_all() {
-        let mut d = step_driver_ok(vec!["{g: a.com}", "{g: b.com}", "{g: c.com}"]);
-        let effects = d.handle_input(Input::Text(".go".into()));
-        let exec_count = effects.iter().filter(|e| matches!(e, Effect::Execute(_))).count();
-        assert_eq!(exec_count, 3);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("3 requests"))));
-    }
-
-    #[test]
-    fn go_shortcut() {
-        let mut d = step_driver_ok(vec!["{g: a.com}"]);
-        let effects = d.handle_input(Input::Text(".g".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(_))));
-    }
-
-    #[test]
-    fn go_empty_queue() {
-        let mut d = step_driver_ok(vec![]);
-        let effects = d.handle_input(Input::Text(".go".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
-    }
-
-    #[test]
-    fn next_shows_error_from_source() {
-        let mut d = step_driver(vec![Err("bad yaml")]);
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("bad yaml"))));
-        // Should not prefill
-        assert!(!has_effect(&effects, |e| matches!(e, Effect::Prefill(_))));
-    }
-
-    #[test]
-    fn go_stops_on_error() {
-        let mut d = step_driver(vec![Ok("{g: a.com}"), Err("bad yaml"), Ok("{g: b.com}")]);
-        let effects = d.handle_input(Input::Text(".go".into()));
-        // Should execute the first, print error, not execute the third
-        let exec_count = effects.iter().filter(|e| matches!(e, Effect::Execute(_))).count();
-        assert_eq!(exec_count, 1);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("bad yaml"))));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("1 requests"))));
-    }
-
-    #[test]
-    fn next_in_non_step_mode() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("no more"))));
-    }
-
-    // --- .step command ---
-
-    #[test]
-    fn step_loads_file() {
-        let mut d = empty_driver();
-        // Write a temp file with a JSONL request
-        let dir = std::env::temp_dir();
-        let path = dir.join("yurl_test_step.jsonl");
-        std::fs::write(&path, r#"{"g": "http://example.com"}"#).unwrap();
-        let effects = d.handle_input(Input::Text(format!(".step {}", path.display())));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("loaded"))));
-        assert!(d.stdin_source.is_some());
-        // .next should read from the file
-        let effects = d.handle_input(Input::Text(".next".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("example.com"))));
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn step_missing_file_error() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".step /nonexistent/file.yaml".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
-    }
-
-    #[test]
-    fn step_no_args_no_source() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".step".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("usage"))));
-    }
-
-    #[test]
-    fn step_no_args_with_source() {
-        let mut d = step_driver_ok(vec!["{g: example.com}"]);
-        let effects = d.handle_input(Input::Text(".step".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("already loaded"))));
-    }
-
-    #[test]
-    fn step_shortcut() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text(".s /nonexistent/file.yaml".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Print(s) if s.contains("error"))));
-    }
-
-    // --- History navigation ---
-
-    #[test]
-    fn up_navigates_history() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text("{g: first.com}".into()));
-        d.handle_input(Input::Text("{g: second.com}".into()));
-
-        let effects = d.handle_input(Input::Up);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("second.com"))));
-
-        let effects = d.handle_input(Input::Up);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("first.com"))));
-    }
-
-    #[test]
-    fn down_navigates_forward() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text("{g: first.com}".into()));
-        d.handle_input(Input::Text("{g: second.com}".into()));
-
-        // Go up twice
-        d.handle_input(Input::Up);
-        d.handle_input(Input::Up);
-
-        // Go down
-        let effects = d.handle_input(Input::Down);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.contains("second.com"))));
-
-        // Down past end — empty
-        let effects = d.handle_input(Input::Down);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.is_empty())));
-    }
-
-    #[test]
-    fn up_on_empty_history() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Up);
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn text_input_resets_history_cursor() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text("{g: first.com}".into()));
-        d.handle_input(Input::Text("{g: second.com}".into()));
-
-        // Navigate up
-        d.handle_input(Input::Up);
-        assert_eq!(d.history_cursor, 1);
-
-        // New text input resets cursor
-        d.handle_input(Input::Text("{g: third.com}".into()));
-        assert_eq!(d.history_cursor, d.history.len());
-    }
-
-    #[test]
-    fn x_command_in_history_not_expanded() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text(".x {g: example.com}".into()));
-
-        // Press up — should get .x command, not expanded text
-        let effects = d.handle_input(Input::Up);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.starts_with(".x {g:"))));
-    }
-
-    #[test]
-    fn x_flags_in_history() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text(r#".x mv {g: example.com}"#.into()));
-
-        let effects = d.handle_input(Input::Up);
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Prefill(s) if s.starts_with(".x mv"))));
-    }
-
-    // --- Control keys ---
-
-    #[test]
-    fn ctrl_d_exits() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::CtrlD);
-        assert_eq!(effects, vec![Effect::Exit]);
-    }
-
-    #[test]
-    fn ctrl_c_clears_line() {
-        let mut d = empty_driver();
-        // Set up a prefill (as if .x just expanded)
-        d.prefill = Some("{get: https://example.com}".into());
-        let effects = d.handle_input(Input::CtrlC);
-        assert!(effects.is_empty());
-        assert!(d.prefill.is_none(), "prefill should be cleared");
-    }
-
-    #[test]
-    fn empty_input_ignored() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text("".into()));
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn whitespace_only_ignored() {
-        let mut d = empty_driver();
-        let effects = d.handle_input(Input::Text("   ".into()));
-        assert!(effects.is_empty());
-    }
-
-    // --- Multi-line YAML ---
-
-    #[test]
-    fn yaml_multiline_accumulates() {
-        let mut d = empty_driver();
-        // First line — not { so enters YAML mode
-        let effects = d.handle_input(Input::Text("g: example.com".into()));
-        assert!(effects.is_empty());
-        assert!(d.in_yaml_mode());
-
-        // Second line
-        let effects = d.handle_input(Input::Text("h:".into()));
-        assert!(effects.is_empty());
-
-        // Empty line terminates
-        let effects = d.handle_input(Input::Text("".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(_))));
-        assert!(!d.in_yaml_mode());
-    }
-
-    #[test]
-    fn yaml_terminated_by_separator() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text("g: example.com".into()));
-        let effects = d.handle_input(Input::Text("---".into()));
-        assert!(has_effect(&effects, |e| matches!(e, Effect::Execute(s) if s.contains("example.com"))));
-    }
-
-    #[test]
-    fn yaml_aborted_by_ctrl_c() {
-        let mut d = empty_driver();
-        d.handle_input(Input::Text("g: example.com".into()));
-        assert!(d.in_yaml_mode());
-        let effects = d.handle_input(Input::CtrlC);
-        assert!(effects.is_empty());
-        assert!(!d.in_yaml_mode());
+        for spec in &specs {
+            let mut driver = build_driver_from_spec(spec);
+            for (i, step) in spec.interaction.iter().enumerate() {
+                let input = parse_user_input(&step.user);
+                let effects = driver.handle_input(input);
+                assert_effects(&spec.name, i, &step.user, &effects, &step.assertions);
+            }
+        }
     }
 }
