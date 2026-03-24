@@ -316,7 +316,7 @@ yurl v0.12.0
 Batch throughput against [mockinx](https://crates.io/crates/mockinx) (local), compared to [wrk](https://github.com/wg/wrk) and `curl --parallel` at matching concurrency:
 
 ```
-concurrency       wrk      curl    yurl (yaml)   yurl (jsonl)
+concurrency     wrk      curl    yurl (yaml)    yurl (jsonl)
          1       49k       19k        21k            23k
         10      143k       32k        84k            88k
         50      192k       33k       111k           117k

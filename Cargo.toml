@@ -1,7 +1,8 @@
 [package]
 name = "yurl"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "HTTP client — batch, interactive, concurrent, streaming, output routing, caching"
 keywords = ["http", "cli", "json", "curl", "rest"]
