@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 license = "MIT"
 description = "HTTP client — batch, interactive, concurrent, streaming, output routing, caching"
@@ -24,7 +24,7 @@ serde_yml = "0.0.12"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 url = "2"
-yttp = "0.0.6"
+yttp = "0.0.7"
 
 [[bin]]
 name = "jurl"
@@ -36,7 +36,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 axum = "0.8"
-mockinx = { path = "../mockinx" }
+mockinx = "0.2.1"
 multer = "3"
 reqwest = { version = "0.12", features = ["blocking"] }
 hyper = "1"

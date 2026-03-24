@@ -1009,7 +1009,9 @@ dependencies = [
 
 [[package]]
 name = "mockinx"
-version = "0.2.0"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "319ce21f8b2961c5515468883da0761efc619854f9901cbd4369d244589cf270"
 dependencies = [
  "axum",
  "bytes",
@@ -1022,7 +1024,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
- "yttp 0.0.5",
+ "yttp",
 ]
 
 [[package]]
@@ -2360,21 +2362,9 @@ dependencies = [
 
 [[package]]
 name = "yttp"
-version = "0.0.5"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cedd3587d68960d9df5581943b9236f7cf944689032fd60e06141040cf5ca4dd"
-dependencies = [
- "base64",
- "serde_json",
- "serde_yml",
- "url",
-]
-
-[[package]]
-name = "yttp"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "792b5f251c2e530e7ddded0065974f80946a852fa13187eb37e05235073b606e"
+checksum = "30987323adcaa0dc1d843a24fb06dcc9a6e66bec6fcd836fcfaebe07590fd095"
 dependencies = [
  "base64",
  "serde_json",
@@ -2384,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "yurl"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "arc-swap",
  "argh",
@@ -2409,7 +2399,7 @@ dependencies = [
  "tokio",
  "tower",
  "url",
- "yttp 0.0.6",
+ "yttp",
 ]
 
 [[package]]

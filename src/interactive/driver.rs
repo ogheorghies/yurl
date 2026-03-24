@@ -231,7 +231,7 @@ impl Driver {
                 let cfg = self.config.load();
                 return vec![Effect::Print(format!("  config: {}", cfg.summary()))];
             }
-            return match yttp::parse(cfg_str) {
+            return match yttp::from_str(cfg_str) {
                 Ok(val) => {
                     let new_config = Config::parse(&val);
                     let summary = format!("  config: {}", new_config.summary());

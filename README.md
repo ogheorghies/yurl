@@ -299,7 +299,7 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.11.0
+yurl v0.11.1
 
 > .next                              # pre-fills with {g: api!/toys}
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged
@@ -317,13 +317,13 @@ yurl v0.11.0
 Batch throughput against [mockinx](https://crates.io/crates/mockinx) (local), compared to [wrk](https://github.com/wg/wrk) and `curl --parallel` at matching concurrency:
 
 ```
-concurrency    wrk req/s    curl req/s    yurl req/s
-         1       50,000        19,000        22,000
-        10      144,000        32,000        83,000
-        50      191,000        33,000       109,000
-       100      191,000        30,000       109,000
+concurrency       wrk      curl    yurl (yaml)   yurl (jsonl)
+         1       49k       19k        21k            23k
+        10      143k       32k        84k            88k
+        50      192k       33k       111k           117k
+       100      191k       31k       113k           120k
 ```
 
-YAML flow input (`{g: url}`). Strict JSONL (`{"g": "url"}`) is ~7% faster — avoids the YAML parse fallback.
+JSONL (`{"g": "url"}`) is ~10% faster than YAML flow (`{g: url}`) — JSON parsing is faster than YAML parsing.
 
 Run `./benches/run.sh` (requires wrk and mockinx).

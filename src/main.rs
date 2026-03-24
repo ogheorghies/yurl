@@ -202,7 +202,7 @@ fn maybe_auto_stream(dest: &mut Dest, fmt: &Format, concurrent: bool) {
 use error::RequestError;
 
 fn parse_input(s: &str) -> Result<Value, RequestError> {
-    yttp::parse(s).map_err(|e| RequestError::from_parse(s, e))
+    yttp::from_str(s).map_err(|e| RequestError::from_parse(s, e))
 }
 
 /// Flags for the `.x` command — composable modifiers.
@@ -1042,18 +1042,10 @@ impl<R: BufRead> StdinReader<R> {
         if trimmed.is_empty() {
             return None;
         }
-        let val: Value = match serde_yml::from_str(trimmed) {
+        let val = match yttp::from_yaml(trimmed) {
             Ok(v) => v,
             Err(e) => {
-                let (line, column) = e.location()
-                    .map(|loc| (Some(loc.line()), Some(loc.column())))
-                    .unwrap_or((None, None));
-                let err = RequestError::Parse {
-                    input: self.buf.trim().to_string(),
-                    line,
-                    column,
-                    msg: format!("invalid YAML: {e}"),
-                };
+                let err = RequestError::from_parse(self.buf.trim(), e);
                 self.buf.clear();
                 return Some(Err(err));
             }
