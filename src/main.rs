@@ -1074,6 +1074,32 @@ impl<R: BufRead> Iterator for StdinReaderIter<R> {
     }
 }
 
+// ── SIGINT cancellation for interactive mode ─────────────────────────
+//
+// A raw signal handler sets an AtomicBool flag when Ctrl-C is pressed.
+// The dispatch loop polls this flag via wait_for_cancel() in a select!
+// to abort in-flight requests. Only active during interactive request execution.
+
+static mut SIGINT_FLAG: *mut std::ffi::c_void = std::ptr::null_mut();
+
+extern "C" fn sigint_handler(_sig: libc::c_int) {
+    unsafe {
+        if !SIGINT_FLAG.is_null() {
+            let flag = &*(SIGINT_FLAG as *const AtomicBool);
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+async fn wait_for_cancel(flag: &AtomicBool) {
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args: Args = argh::from_env();
@@ -1435,19 +1461,52 @@ async fn main() {
         );
 
         if let Some(done_tx) = done_signal {
-            // Interactive: await the request, get output, signal the REPL
-            if let Err(e) = handle.await {
-                eprintln!("  request failed: {e}");
+            // Interactive: await the request with Ctrl-C cancellation support.
+            // Install a SIGINT handler that sets a flag, use select! to race
+            // the request against the cancellation signal.
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancelled_clone = Arc::clone(&cancelled);
+
+            // Install raw SIGINT handler — sets the flag, async-signal-safe
+            unsafe {
+                let flag = Arc::into_raw(cancelled_clone) as *mut std::ffi::c_void;
+                SIGINT_FLAG = flag;
+                libc::signal(libc::SIGINT, sigint_handler as libc::sighandler_t);
             }
+
+            let result = tokio::select! {
+                res = handle => {
+                    // Request completed normally
+                    if let Err(e) = res {
+                        eprintln!("  request failed: {e}");
+                    }
+                    output_rx
+                        .unwrap()
+                        .await
+                        .unwrap_or_else(|_| OutputResult { stdout: String::new(), stderr: String::new() })
+                }
+                _ = wait_for_cancel(&cancelled) => {
+                    // Ctrl-C pressed — abort the request
+                    // handle is dropped here, which aborts the tokio task
+                    OutputResult { stdout: String::new(), stderr: String::new() }
+                }
+            };
+
+            // Restore default SIGINT handling
+            unsafe {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                // Reclaim the Arc to avoid leak
+                if !SIGINT_FLAG.is_null() {
+                    let _ = Arc::from_raw(SIGINT_FLAG as *const AtomicBool);
+                    SIGINT_FLAG = std::ptr::null_mut();
+                }
+            }
+
             if let Some(s) = spinner {
                 s.finish_and_clear();
                 eprint!("\x1b[?25h");
             }
-            // Send output result back to the REPL thread
-            let result = output_rx
-                .unwrap()
-                .await
-                .unwrap_or_else(|_| OutputResult { stdout: String::new(), stderr: String::new() });
+
             done_tx.send(result).ok();
         } else {
             // Batch: concurrent — collect handle, await all at end

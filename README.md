@@ -311,3 +311,19 @@ yurl v0.11.0
 {"s":"201 Created","b":{"id":3,"name":"Owl"}}
   2 requests executed
 ```
+
+## Performance
+
+Batch throughput against [mockinx](https://crates.io/crates/mockinx) (local), compared to [wrk](https://github.com/wg/wrk) and `curl --parallel` at matching concurrency:
+
+```
+concurrency    wrk req/s    curl req/s    yurl req/s
+         1       50,000        19,000        22,000
+        10      144,000        32,000        83,000
+        50      191,000        33,000       109,000
+       100      191,000        30,000       109,000
+```
+
+YAML flow input (`{g: url}`). Strict JSONL (`{"g": "url"}`) is ~7% faster — avoids the YAML parse fallback.
+
+Run `./benches/run.sh` (requires wrk and mockinx).
