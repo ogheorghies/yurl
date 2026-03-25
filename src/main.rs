@@ -6,6 +6,7 @@ mod format_json;
 mod format_yaml;
 mod interactive;
 mod template;
+mod yaml_util;
 
 use arc_swap::ArcSwap;
 use argh::FromArgs;
@@ -517,47 +518,11 @@ fn needs_yaml_key_quoting(s: &str) -> bool {
 }
 
 fn yaml_flow_scalar(s: &str) -> String {
-    if s.is_empty() || needs_yaml_quoting(s) {
-        let escaped = s
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t");
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
-    }
+    yaml_util::yaml_flow_scalar(s)
 }
 
 fn needs_yaml_quoting(s: &str) -> bool {
-    // Reserved YAML words
-    match s {
-        "true" | "false" | "null" | "yes" | "no" | "on" | "off" | "~"
-        | "True" | "False" | "Null" | "Yes" | "No" | "On" | "Off"
-        | "TRUE" | "FALSE" | "NULL" | "YES" | "NO" | "ON" | "OFF" => return true,
-        _ => {}
-    }
-    // Looks like a number
-    if s.parse::<f64>().is_ok() {
-        return true;
-    }
-    // Flow indicators or control chars
-    if s.contains(|c: char| matches!(c, '{' | '}' | '[' | ']' | ',' | '\n' | '\r' | '\t')) {
-        return true;
-    }
-    // Mapping indicator or comment
-    if s.contains(": ") || s.contains(" #") {
-        return true;
-    }
-    // Starts with problematic chars
-    if s.starts_with(|c: char| {
-        matches!(c, '&' | '*' | '!' | '|' | '>' | '\'' | '"' | '%' | '@' | '`' | '?' | '-' | ' ' | ':' | '#')
-    }) {
-        return true;
-    }
-    // Ends with colon or space
-    s.ends_with(':') || s.ends_with(' ')
+    yaml_util::needs_yaml_quoting(s)
 }
 
 async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concurrent: bool, yaml_mode: bool, cache_stores: Option<&cache::CacheStores>, color_stdout: bool, color_stderr: bool) -> Result<OutputBuffer, RequestError> {

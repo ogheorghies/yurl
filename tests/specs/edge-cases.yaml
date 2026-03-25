@@ -43,14 +43,39 @@
 
 # === Response body with special characters ===
 
-- name: JSON response with commas and newlines in value
+- name: JSON response with commas in value (block style, unquoted is valid)
   rules:
     - match: {g: /special}
-      reply: {s: 200, h: {ct!: j!}, b: {key: "value1, value2, \n value 3, value 4"}}
-  input: "{g: mx!/special}"
+      reply: {s: 200, h: {ct!: j!}, b: {key: "value1, value2"}}
+  input: "{g: mx!/special, 1: 'y(b)'}"
   bin: yurl
   assert:
-    stdout: {contains: ["key:", "value1"]}
+    stdout:
+      contains:
+        - "value1, value2"
+
+- name: JSON response with commas in array item (serde_yml block style)
+  rules:
+    - match: {g: /special2}
+      reply: {s: 200, h: {ct!: j!}, b: {items: [{name: "a, b"}]}}
+  input: "{g: mx!/special2}"
+  bin: yurl
+  assert:
+    stdout:
+      contains:
+        - "name: a, b"
+
+- name: JSON response with braces in value are quoted by serde_yml
+  rules:
+    - match: {g: /braces}
+      reply: {s: 200, h: {ct!: j!}, b: {key: "a {b} c"}}
+  input: "{g: mx!/braces}"
+  bin: yurl
+  assert:
+    stdout:
+      contains:
+        - "key:"
+        - "a {b} c"
 
 # === Empty and null values ===
 

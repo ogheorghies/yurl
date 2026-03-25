@@ -1,3 +1,4 @@
+use crate::yaml_util;
 use serde_json::Value;
 
 // ANSI color codes
@@ -8,6 +9,10 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 /// Render a JSON value as YAML, with specified keys rendered inline (flow style).
+///
+/// When `color` is false (batch/pipe mode), non-inline keys are serialized via
+/// `serde_yml` for guaranteed valid YAML. When `color` is true (TTY), the custom
+/// renderer is used for ANSI coloring.
 pub fn to_yaml(val: &Value, inline_keys: &[&str], color: bool) -> String {
     let mut out = String::new();
     if let Value::Object(map) = val {
@@ -21,12 +26,41 @@ pub fn to_yaml(val: &Value, inline_keys: &[&str], color: bool) -> String {
                 }
                 write_flow(&mut out, v, color);
                 out.push('\n');
+            } else if !color {
+                // Batch mode: use serde_yml for guaranteed valid YAML
+                write_serde_yaml_key_value(&mut out, k, v);
             } else {
                 write_yaml_key_value(&mut out, k, v, 0, color);
             }
         }
     }
     out
+}
+
+/// Serialize a key-value pair using serde_yml. The value is serialized as a
+/// standalone YAML document, then indented under the key.
+fn write_serde_yaml_key_value(out: &mut String, key: &str, val: &Value) {
+    match val {
+        // Scalars: render inline
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            out.push_str(key);
+            out.push_str(": ");
+            let s = serde_yml::to_string(val).unwrap_or_default();
+            out.push_str(s.trim_end());
+            out.push('\n');
+        }
+        // Compound: render block under key
+        _ => {
+            out.push_str(key);
+            out.push_str(":\n");
+            let s = serde_yml::to_string(val).unwrap_or_default();
+            for line in s.lines() {
+                out.push_str("  ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
 }
 
 fn write_yaml_key_value(out: &mut String, key: &str, val: &Value, indent: usize, color: bool) {
@@ -54,13 +88,13 @@ fn write_yaml_key_value(out: &mut String, key: &str, val: &Value, indent: usize,
         }
         _ => {
             out.push_str(": ");
-            write_yaml_scalar(out, val, color);
+            write_scalar(out, val, color, false);
             out.push('\n');
         }
     }
 }
 
-fn write_yaml_scalar(out: &mut String, val: &Value, color: bool) {
+fn write_scalar(out: &mut String, val: &Value, color: bool, flow: bool) {
     match val {
         Value::Null => {
             if color { out.push_str(&format!("{DIM}null{RESET}")); }
@@ -77,20 +111,10 @@ fn write_yaml_scalar(out: &mut String, val: &Value, color: bool) {
             else { out.push_str(&s); }
         }
         Value::String(s) => {
-            let needs_quote = s.is_empty()
-                || s.contains(':')
-                || s.contains('#')
-                || s.contains('\n')
-                || s.starts_with(' ')
-                || s.starts_with('"')
-                || s.starts_with('\'')
-                || s == "true"
-                || s == "false"
-                || s == "null";
-            let formatted = if needs_quote {
-                format!("'{}'", s.replace('\'', "''"))
+            let formatted = if flow {
+                yaml_util::yaml_flow_scalar(s)
             } else {
-                s.to_string()
+                yaml_util::yaml_block_scalar(s)
             };
             if color { out.push_str(&format!("{GREEN}{formatted}{RESET}")); }
             else { out.push_str(&formatted); }
@@ -134,7 +158,7 @@ fn write_flow(out: &mut String, val: &Value, color: bool) {
             }
             out.push(']');
         }
-        _ => write_yaml_scalar(out, val, color),
+        _ => write_scalar(out, val, color, true),
     }
 }
 
