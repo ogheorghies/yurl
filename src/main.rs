@@ -343,7 +343,8 @@ pub fn expand_with_flags(line: &str, config: &Config, flags: &ExpandFlags) -> Re
 
     // Inline query into URL
     let mut full_url = url;
-    yttp::append_query_to_url(&mut full_url, &query, yttp::comma_join).ok();
+    let qarray_fn = config.qarray.to_join_fn();
+    yttp::append_query_to_url(&mut full_url, &query, &*qarray_fn).ok();
 
     if flags.curl {
         return Ok(render_curl(method, &full_url, &headers, &body, flags.vertical));
@@ -617,7 +618,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         msg: "no HTTP method found (use g, p, put, d, patch, ...)".to_string(),
     })?;
     let mut url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
-    yttp::append_query_to_url(&mut url, &query, yttp::comma_join).ok();
+    let qarray_fn = config.qarray.to_join_fn();
+    yttp::append_query_to_url(&mut url, &query, &*qarray_fn).ok();
 
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
 

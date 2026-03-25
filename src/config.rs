@@ -23,6 +23,64 @@ pub enum Progress {
     Known(u64),
 }
 
+/// Configuration for query array serialization.
+/// Controls how `q: {tags: [a, b]}` is encoded in URLs.
+#[derive(Clone)]
+pub struct QueryArrayConfig {
+    pub default: String,
+    pub overrides: HashMap<String, String>,
+}
+
+impl QueryArrayConfig {
+    fn new() -> Self {
+        QueryArrayConfig {
+            default: ",".to_string(),
+            overrides: HashMap::new(),
+        }
+    }
+
+    /// Build a closure that implements the configured array join strategy.
+    pub fn to_join_fn(&self) -> Box<dyn Fn(&str, &[String]) -> Vec<String> + Send + Sync> {
+        let default = self.default.clone();
+        let overrides = self.overrides.clone();
+        Box::new(move |key: &str, vals: &[String]| {
+            let sep = overrides.get(key).unwrap_or(&default);
+            match sep.as_str() {
+                "," => yttp::comma_join(key, vals),
+                "&" => yttp::repeat_keys(key, vals),
+                "[]" => yttp::bracket_join(key, vals),
+                ";" => yttp::semicolon_join(key, vals),
+                _ => yttp::comma_join(key, vals),
+            }
+        })
+    }
+}
+
+fn parse_qarray(val: &Value) -> QueryArrayConfig {
+    match val {
+        Value::String(s) => QueryArrayConfig {
+            default: s.clone(),
+            overrides: HashMap::new(),
+        },
+        Value::Array(arr) => {
+            let default = arr.first()
+                .and_then(|v| v.as_str())
+                .unwrap_or(",")
+                .to_string();
+            let overrides = arr.get(1)
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            QueryArrayConfig { default, overrides }
+        }
+        _ => QueryArrayConfig::new(),
+    }
+}
+
 pub struct Config {
     pub default_headers: Map<String, Value>,
     pub default_outputs: Vec<(String, String)>,
@@ -30,6 +88,7 @@ pub struct Config {
     pub progress: Progress,
     pub rules: Vec<Rule>,
     pub apis: HashMap<String, String>,
+    pub qarray: QueryArrayConfig,
 }
 
 impl Config {
@@ -41,6 +100,7 @@ impl Config {
             progress: Progress::Off,
             rules: Vec::new(),
             apis: HashMap::new(),
+            qarray: QueryArrayConfig::new(),
         }
     }
 
@@ -101,6 +161,10 @@ impl Config {
             _ => {}
         }
 
+        let qarray = obj.get("qarray")
+            .map(|v| parse_qarray(v))
+            .unwrap_or_else(QueryArrayConfig::new);
+
         Config {
             default_headers,
             default_outputs,
@@ -108,6 +172,7 @@ impl Config {
             progress,
             rules,
             apis,
+            qarray,
         }
     }
 

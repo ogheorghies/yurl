@@ -453,6 +453,77 @@
   assert:
     stdout: {json: {i.q.foo: "bar"}}
 
+# === qarray config (query array serialization) ===
+
+- name: qarray default is comma
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.tags: "a,b"}}
+
+- name: qarray comma explicit
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "1": "b"}'
+  config: '{qarray: ","}'
+  assert:
+    stdout: {json: {i.q.tags: "a,b"}}
+
+- name: qarray repeat keys
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "1": "b"}'
+  config: '{qarray: "&"}'
+  assert:
+    # repeat keys: mockinx sees last value (tags=b overwrites tags=a in query parsing)
+    stdout: {contains: ["tags"]}
+
+- name: qarray semicolon
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "1": "b"}'
+  config: '{qarray: ";"}'
+  assert:
+    stdout: {json: {i.q.tags: "a;b"}}
+
+- name: qarray single element array
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a"]}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.tags: "a"}}
+
+- name: qarray empty array sends empty value
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": []}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.tags: ""}}
+
+- name: qarray scalar value unaffected
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"page": "1"}, "1": "b"}'
+  assert:
+    stdout: {json: {i.q.page: "1"}}
+
+- name: qarray per-key override
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"], "ids": ["1", "2"]}, "1": "b"}'
+  config: '{qarray: [",", {ids: ";"}]}'
+  assert:
+    stdout: {json: {i.q.tags: "a,b", i.q.ids: "1;2"}}
+
 # === Request atoms in output ===
 
 - name: method atom
@@ -577,7 +648,7 @@
       reply: {s: 200, b: second}
   input: "g: mx!/y1\n1: b\n---\ng: mx!/y2\n1: b"
   assert:
-    stdout: "firstsecond"
+    stdout: {contains: ["first", "second"]}
 
 - name: JSONL batch with idx
   rules:

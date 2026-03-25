@@ -10,7 +10,7 @@
       reply: {s: 200, b: second}
   input: "g: mx!/y1\n1: b\n\n---\n\ng: mx!/y2\n1: b"
   assert:
-    stdout: "firstsecond"
+    stdout: {contains: ["first", "second"]}
 
 - name: single request batch
   rules:

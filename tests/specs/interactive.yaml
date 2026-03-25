@@ -570,6 +570,21 @@
       assert:
         print: {contains: "unknown command"}
 
+# === .x with query array ===
+
+- name: .x expands query array with default comma
+  interaction:
+    - user: ".x {g: example.com, q: {tags: [a, b], page: 1}}"
+      assert:
+        prefill: {contains: "tags=a,b"}
+
+- name: .x expands query array with config qarray repeat
+  config: '{qarray: "&"}'
+  interaction:
+    - user: ".x {g: example.com, q: {tags: [a, b]}}"
+      assert:
+        prefill: {contains: "tags=a"}
+
 # === Prefill edit flow ===
 
 - name: prefill edit executes directly
