@@ -1,6 +1,6 @@
 [package]
 name = "yurl"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -25,7 +25,7 @@ serde_yml = "0.0.12"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 url = "2"
-yttp = { path = "../yttp" }
+yttp = "0.0.8"
 
 [[bin]]
 name = "jurl"

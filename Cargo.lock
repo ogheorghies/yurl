@@ -2375,6 +2375,8 @@ dependencies = [
 [[package]]
 name = "yttp"
 version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82acc2ff313972fc543c8e6281f0ada44aebebe53a610e43a61dac6baa240379"
 dependencies = [
  "base64",
  "serde_json",
@@ -2384,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "yurl"
-version = "0.13.0"
+version = "0.14.0"
 dependencies = [
  "arc-swap",
  "argh",

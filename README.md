@@ -85,6 +85,7 @@ h:                                    # default headers
 
 concurrency: 10                       # global max (default: 1)
 progress: true                        # spinner or N for progress bar
+qarray: ","                           # array query style: , & [] ; (default: ,)
 
 rules:
   - match: {u: "**slow-api**"}
@@ -118,7 +119,9 @@ Stdin reads JSONL (one per line) or YAML (`---` separated). Streaming — reques
 | method (`g`, `p`, `d`, `put`, `patch`, `head`, `options`, `trace`) | URL |
 | `h` | headers (keys and values support [shortcuts](#header-shortcuts)) |
 | `b` | body (encoding follows Content-Type) |
+| `q` | query parameters (appended to URL) |
 | `md` | metadata fields, available in output and file path templates |
+| `qarray` | array query style override: `","` `"&"` `"[]"` `";"` |
 
 URLs without a scheme: `localhost`/`127.0.0.1`/`[::1]`/bare hostnames get `http://`, else `https://`.
 
@@ -298,7 +301,7 @@ $ echo '
 {p: api!/toys, b: {name: Owl}}
 ' | yurl -i '{api: localhost:3000, h: {a!: bearer!tok}, 1: "j(s b)"}'
 
-yurl v0.13.0
+yurl v0.14.0
 
 > .pop                               # pops {g: api!/toys}, pre-fills
 > .x m {g: api!/toys}                # Ctrl-A, prepend .x m to expand merged

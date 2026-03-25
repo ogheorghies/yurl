@@ -524,6 +524,23 @@
   assert:
     stdout: {json: {i.q.tags: "a,b", i.q.ids: "1;2"}}
 
+- name: qarray per-request override
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "qarray": "&", "1": "b"}'
+  assert:
+    stdout: {contains: ["tags"]}
+
+- name: qarray per-request overrides config
+  rules:
+    - match: {g: /qa}
+      reply: {s: 200, b: {reflect!: [i.q]}}
+  input: '{"g": "mx!/qa", "q": {"tags": ["a", "b"]}, "qarray": ";", "1": "b"}'
+  config: '{qarray: ","}'
+  assert:
+    stdout: {json: {i.q.tags: "a;b"}}
+
 # === Request atoms in output ===
 
 - name: method atom

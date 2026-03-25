@@ -252,6 +252,7 @@ fn parse_request_fields(line: &str, config: &Config) -> Result<(
     Option<Value>,                 // body
     Option<Value>,                 // md
     Vec<(String, String)>,         // outputs
+    Option<Value>,                 // qarray override
 ), RequestError> {
     let json = parse_input(line)?;
     let obj = json.as_object().ok_or_else(|| RequestError::Structure {
@@ -264,6 +265,7 @@ fn parse_request_fields(line: &str, config: &Config) -> Result<(
     let mut body = None;
     let mut md = None;
     let mut query = None;
+    let mut qarray = None;
     let mut outputs: Vec<(String, String)> = Vec::new();
 
     for (key, val) in obj {
@@ -291,6 +293,7 @@ fn parse_request_fields(line: &str, config: &Config) -> Result<(
                 "b" | "body" => body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
                 "q" | "query" => query = Some(val.clone()),
+                "qarray" => qarray = Some(val.clone()),
                 _ => return Err(RequestError::Structure {
                     msg: format!("unknown key: {key}"),
                 }),
@@ -301,7 +304,16 @@ fn parse_request_fields(line: &str, config: &Config) -> Result<(
     let method = method.unwrap_or("GET");
     let url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
 
-    Ok((method, url, query, req_headers, body, md, outputs))
+    Ok((method, url, query, req_headers, body, md, outputs, qarray))
+}
+
+/// Resolve the query array join function: per-request override wins, else config default.
+fn resolve_qarray_fn(req_qarray: &Option<Value>, config: &Config) -> Box<dyn Fn(&str, &[String]) -> Vec<String> + Send + Sync> {
+    if let Some(val) = req_qarray {
+        config::parse_qarray_value(val).to_join_fn()
+    } else {
+        config.qarray.to_join_fn()
+    }
 }
 
 /// Resolve headers — base (request only) or merged (+ config defaults + rules).
@@ -329,7 +341,7 @@ fn resolve_headers_for_expand(
 
 /// Unified expand function — resolves request and renders with given flags.
 pub fn expand_with_flags(line: &str, config: &Config, flags: &ExpandFlags) -> Result<String, RequestError> {
-    let (method, url, query, req_headers, body, md, outputs) =
+    let (method, url, query, req_headers, body, md, outputs, req_qarray) =
         parse_request_fields(line, config)?;
 
     let mut headers = resolve_headers_for_expand(
@@ -343,7 +355,7 @@ pub fn expand_with_flags(line: &str, config: &Config, flags: &ExpandFlags) -> Re
 
     // Inline query into URL
     let mut full_url = url;
-    let qarray_fn = config.qarray.to_join_fn();
+    let qarray_fn = resolve_qarray_fn(&req_qarray, config);
     yttp::append_query_to_url(&mut full_url, &query, &*qarray_fn).ok();
 
     if flags.curl {
@@ -557,6 +569,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     let mut req_body = None;
     let mut md = None;
     let mut query = None;
+    let mut req_qarray = None;
     let mut outputs: Vec<(Dest, Format)> = Vec::new();
 
     for (key, val) in obj {
@@ -585,6 +598,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
                 "b" | "body" => req_body = Some(val.clone()),
                 "md" => md = Some(val.clone()),
                 "q" | "query" => query = Some(val.clone()),
+                "qarray" => req_qarray = Some(val.clone()),
                 _ => return Err(RequestError::Structure {
                     msg: format!("unknown key: {key}"),
                 }),
@@ -618,7 +632,7 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
         msg: "no HTTP method found (use g, p, put, d, patch, ...)".to_string(),
     })?;
     let mut url = config::expand_api_url(&url.unwrap_or_default(), &config.apis);
-    let qarray_fn = config.qarray.to_join_fn();
+    let qarray_fn = resolve_qarray_fn(&req_qarray, config);
     yttp::append_query_to_url(&mut url, &query, &*qarray_fn).ok();
 
     let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);

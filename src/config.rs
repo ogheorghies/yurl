@@ -56,7 +56,7 @@ impl QueryArrayConfig {
     }
 }
 
-fn parse_qarray(val: &Value) -> QueryArrayConfig {
+pub fn parse_qarray_value(val: &Value) -> QueryArrayConfig {
     match val {
         Value::String(s) => QueryArrayConfig {
             default: s.clone(),
@@ -162,7 +162,7 @@ impl Config {
         }
 
         let qarray = obj.get("qarray")
-            .map(|v| parse_qarray(v))
+            .map(|v| parse_qarray_value(v))
             .unwrap_or_else(QueryArrayConfig::new);
 
         Config {
