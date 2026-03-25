@@ -42,40 +42,25 @@
     stdout: "ok"
 
 # === Response body with special characters ===
+# Regression: before the fix, commas and braces in string values were not
+# quoted in YAML flow style, producing invalid YAML like:
+#   {name: hello, world}  →  parsed as two entries instead of one value
 
-- name: JSON response with commas in value (block style, unquoted is valid)
+- name: "regression: commas in value survive JSON round-trip"
   rules:
-    - match: {g: /special}
-      reply: {s: 200, h: {ct!: j!}, b: {key: "value1, value2"}}
-  input: "{g: mx!/special, 1: 'y(b)'}"
-  bin: yurl
+    - match: {g: /comma}
+      reply: {s: 200, h: {ct!: j!}, b: {items: [{name: "hello, world", tags: "a, b, c"}]}}
+  input: "{g: mx!/comma, 1: 'j(b)'}"
   assert:
-    stdout:
-      contains:
-        - "value1, value2"
+    stdout: {json: {b.items.0.name: "hello, world", b.items.0.tags: "a, b, c"}}
 
-- name: JSON response with commas in array item (serde_yml block style)
-  rules:
-    - match: {g: /special2}
-      reply: {s: 200, h: {ct!: j!}, b: {items: [{name: "a, b"}]}}
-  input: "{g: mx!/special2}"
-  bin: yurl
-  assert:
-    stdout:
-      contains:
-        - "name: a, b"
-
-- name: JSON response with braces in value are quoted by serde_yml
+- name: "regression: braces in value survive JSON round-trip"
   rules:
     - match: {g: /braces}
-      reply: {s: 200, h: {ct!: j!}, b: {key: "a {b} c"}}
-  input: "{g: mx!/braces}"
-  bin: yurl
+      reply: {s: 200, h: {ct!: j!}, b: {note: "braces {x} and [y]"}}
+  input: "{g: mx!/braces, 1: 'j(b)'}"
   assert:
-    stdout:
-      contains:
-        - "key:"
-        - "a {b} c"
+    stdout: {json: {b.note: "braces {x} and [y]"}}
 
 # === Empty and null values ===
 

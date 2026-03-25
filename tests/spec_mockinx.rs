@@ -286,10 +286,15 @@ fn assert_stream(name: &str, stream: &str, value: &str, other: &str, a: &StreamA
 }
 
 /// Simple dot-notation JSON path lookup: "s.c" → json["s"]["c"]
+/// Numeric segments index into arrays: "items.0.name" → items[0]["name"]
 fn json_path<'a>(json: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut current = json;
     for key in path.split('.') {
-        current = current.get(key)?;
+        current = if let Ok(idx) = key.parse::<usize>() {
+            current.get(idx)?
+        } else {
+            current.get(key)?
+        };
     }
     Some(current)
 }
