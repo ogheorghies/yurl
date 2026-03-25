@@ -1024,7 +1024,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
- "yttp",
+ "yttp 0.0.7",
 ]
 
 [[package]]
@@ -2373,6 +2373,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yttp"
+version = "0.0.8"
+dependencies = [
+ "base64",
+ "serde_json",
+ "serde_yml",
+ "url",
+]
+
+[[package]]
 name = "yurl"
 version = "0.13.0"
 dependencies = [
@@ -2399,7 +2409,7 @@ dependencies = [
  "tokio",
  "tower",
  "url",
- "yttp",
+ "yttp 0.0.8",
 ]
 
 [[package]]
