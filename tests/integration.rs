@@ -274,11 +274,32 @@ fn env_var_in_auth_array() {
 }
 
 #[test]
-fn env_var_unset_passes_through() {
-    let b = base();
+fn env_var_unset_errors() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
     cmd.arg(r#"{"h": {"X-Test": "$YURL_NONEXISTENT_VAR"}}"#);
     cmd.env_remove("YURL_NONEXISTENT_VAR");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(b"{\"g\": \"http://example.com\"}").unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "should exit with error: {stderr}");
+    assert!(stderr.contains("YURL_NONEXISTENT_VAR"), "should mention variable name: {stderr}");
+}
+
+#[test]
+fn env_var_empty_string_allowed() {
+    let b = base();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(r#"{"h": {"X-Test": "$YURL_EMPTY_VAR"}}"#);
+    cmd.env("YURL_EMPTY_VAR", "");
     let output = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -291,6 +312,5 @@ fn env_var_unset_passes_through() {
             child.wait_with_output()
         })
         .expect("failed to run jurl");
-    let out = String::from_utf8(output.stdout).unwrap();
-    assert!(out.contains("$YURL_NONEXISTENT_VAR"), "unset var should pass through: {out}");
+    assert!(output.status.success(), "empty var should succeed");
 }

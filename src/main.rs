@@ -1092,7 +1092,13 @@ async fn main() {
     let config = match &config_str {
         Some(cfg_str) => {
             match parse_input(cfg_str) {
-                Ok(json) => Config::parse(&json),
+                Ok(json) => match Config::parse(&json) {
+                    Ok(cfg) => cfg,
+                    Err(e) => {
+                        eprintln!("  error: {e}");
+                        std::process::exit(1);
+                    }
+                },
                 Err(e) => {
                     eprintln!("{}", e.display_colored());
                     std::process::exit(1);
@@ -1519,7 +1525,7 @@ mod tests {
     #[test]
     fn expand_request_api_alias_and_headers() {
         let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Debug": "1"}}"#).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         let result = expand_merged(r#"{"g": "api!/toys", "h": {"a!": "bearer!tok"}}"#, &config).unwrap();
         // Output is YAML flow style, round-trips through yttp::parse
         let parsed = yttp::parse(&result).unwrap();
@@ -1552,7 +1558,7 @@ mod tests {
         let config_json = parse_input(
             r#"{"rules": [{"match": {"u": "**example**"}, "h": {"X-From-Rule": "yes"}}]}"#,
         ).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         let result = expand_merged(r#"{"g": "https://example.com/api"}"#, &config).unwrap();
         let parsed = yttp::parse(&result).unwrap();
         let h = parsed.get("h").unwrap().as_object().unwrap();
@@ -1570,7 +1576,7 @@ mod tests {
         let config_json = parse_input(
             r#"{"api": {"main": "localhost:3000", "staging": "staging.example.com"}, "h": {"X-Test": "1"}, "rules": [{"h": {"X-R": "1"}}], "concurrency": 5}"#,
         ).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         let summary = config.summary();
         assert!(summary.contains("api:"));
         assert!(summary.contains("h: 1 header"));
@@ -1581,7 +1587,7 @@ mod tests {
     #[test]
     fn arcswap_config_replacement() {
         let config_json = parse_input(r#"{"api": "localhost:3000", "h": {"X-Old": "1"}}"#).unwrap();
-        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json)));
+        let config = Arc::new(ArcSwap::from_pointee(Config::parse(&config_json).unwrap()));
 
         // Initial state
         let result = expand_merged(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
@@ -1590,7 +1596,7 @@ mod tests {
 
         // Replace config
         let new_config_json = parse_input(r#"{"api": "example.com:8080", "h": {"X-New": "2"}}"#).unwrap();
-        config.store(Arc::new(Config::parse(&new_config_json)));
+        config.store(Arc::new(Config::parse(&new_config_json).unwrap()));
 
         // Verify new config is used
         let result = expand_merged(r#"{"g": "api!/test"}"#, &config.load()).unwrap();
@@ -1756,7 +1762,7 @@ mod tests {
     #[test]
     fn expand_base_vs_merged() {
         let config_json = parse_input(r#"{"h": {"X-Config": "yes"}}"#).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         // Base: no config headers
         let base = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &ExpandFlags::default()).unwrap();
         assert!(!base.contains("X-Config"), "base should not include config headers: {base}");
@@ -1768,7 +1774,7 @@ mod tests {
     #[test]
     fn expand_short_headers() {
         let config_json = parse_input(r#"{"h": {"Authorization": "Bearer tok"}}"#).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         let flags = ExpandFlags { merged: true, short: true, ..Default::default() };
         let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
         assert!(result.contains("a!"), "should collapse Authorization: {result}");
@@ -1778,7 +1784,7 @@ mod tests {
     #[test]
     fn expand_short_ignored_with_curl() {
         let config_json = parse_input(r#"{"h": {"Authorization": "Bearer tok"}}"#).unwrap();
-        let config = Config::parse(&config_json);
+        let config = Config::parse(&config_json).unwrap();
         let flags = ExpandFlags { merged: true, curl: true, short: true, ..Default::default() };
         let result = expand_with_flags(r#"{"g": "https://example.com"}"#, &config, &flags).unwrap();
         // curl output should use full headers, not shortcuts

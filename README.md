@@ -162,7 +162,7 @@ URLs without a scheme: `localhost`/`127.0.0.1`/`[::1]`/bare hostnames get `http:
 | `a!: [user, pass]` | `Basic base64(user:pass)` |
 | `a!: Scheme value` | passthrough |
 
-`$VAR` in config headers expands from environment. Only pure `$VAR` values (entire string is `$` + alphanumeric/underscore).
+`$VAR` in config headers expands from environment. Only pure `$VAR` values (entire string is `$` + alphanumeric/underscore). Undefined variables are an error; empty values are allowed.
 
 ## Output
 

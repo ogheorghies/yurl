@@ -104,7 +104,7 @@ impl Config {
         }
     }
 
-    pub fn parse(json: &Value) -> Self {
+    pub fn parse(json: &Value) -> Result<Self, String> {
         let obj = json.as_object().expect("config must be a JSON object");
 
         let mut default_headers = obj
@@ -114,7 +114,7 @@ impl Config {
             .cloned()
             .unwrap_or_default();
 
-        expand_env_vars(&mut default_headers);
+        expand_env_vars(&mut default_headers)?;
         expand_headers(&mut default_headers);
 
         let mut default_outputs = Vec::new();
@@ -140,10 +140,11 @@ impl Config {
             _ => Progress::Off,
         };
 
-        let rules = obj
+        let rules: Vec<Rule> = obj
             .get("rules")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(parse_rule).collect())
+            .map(|arr| arr.iter().map(parse_rule).collect::<Result<Vec<_>, _>>())
+            .transpose()?
             .unwrap_or_default();
 
         let mut apis = HashMap::new();
@@ -165,7 +166,7 @@ impl Config {
             .map(|v| parse_qarray_value(v))
             .unwrap_or_else(QueryArrayConfig::new);
 
-        Config {
+        Ok(Config {
             default_headers,
             default_outputs,
             global_concurrency,
@@ -173,7 +174,7 @@ impl Config {
             rules,
             apis,
             qarray,
-        }
+        })
     }
 
     /// Return a human-readable one-line summary of the active config.
@@ -266,7 +267,7 @@ impl Config {
     }
 }
 
-fn parse_rule(val: &Value) -> Rule {
+fn parse_rule(val: &Value) -> Result<Rule, String> {
     let obj = val.as_object().expect("rule must be a JSON object");
 
     let match_obj = obj.get("match").and_then(|v| v.as_object());
@@ -296,7 +297,7 @@ fn parse_rule(val: &Value) -> Rule {
         .cloned()
         .unwrap_or_default();
 
-    expand_env_vars(&mut headers);
+    expand_env_vars(&mut headers)?;
     expand_headers(&mut headers);
 
     let concurrency = obj
@@ -306,14 +307,14 @@ fn parse_rule(val: &Value) -> Rule {
 
     let cache = obj.get("cache").and_then(cache::parse_cache);
 
-    Rule {
+    Ok(Rule {
         match_url,
         match_method,
         match_md,
         headers,
         concurrency,
         cache,
-    }
+    })
 }
 
 fn rule_matches(rule: &Rule, method: &str, url: &str, md: &Option<Value>) -> bool {
@@ -368,30 +369,38 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 /// Expand `$VAR` references in header values from environment variables.
 /// Only pure `$VAR` values are expanded (the entire string is `$` + alphanumeric/underscore).
 /// Also expands inside arrays (e.g. `[user, $PASS]` for basic auth).
-fn expand_env_vars(headers: &mut Map<String, Value>) {
+fn expand_env_vars(headers: &mut Map<String, Value>) -> Result<(), String> {
     for (_k, v) in headers.iter_mut() {
-        expand_env_value(v);
+        expand_env_value(v)?;
     }
+    Ok(())
 }
 
-fn expand_env_value(v: &mut Value) {
+fn expand_env_value(v: &mut Value) -> Result<(), String> {
     match v {
         Value::String(s) => {
             if let Some(var) = s.strip_prefix('$') {
                 if !var.is_empty() && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    if let Ok(val) = std::env::var(var) {
-                        *s = val;
+                    match std::env::var(var) {
+                        Ok(val) => *s = val,
+                        Err(std::env::VarError::NotPresent) => {
+                            return Err(format!("undefined environment variable: ${var}"));
+                        }
+                        Err(std::env::VarError::NotUnicode(_)) => {
+                            return Err(format!("environment variable ${var} is not valid UTF-8"));
+                        }
                     }
                 }
             }
         }
         Value::Array(arr) => {
             for item in arr.iter_mut() {
-                expand_env_value(item);
+                expand_env_value(item)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Expand `name!/path` API aliases in a URL, then auto-detect scheme if missing.

@@ -304,12 +304,14 @@ impl Driver {
                 return vec![Effect::Print(format!("  config: {}", cfg.summary()))];
             }
             return match yttp::from_str(cfg_str) {
-                Ok(val) => {
-                    let new_config = Config::parse(&val);
-                    let summary = format!("  config: {}", new_config.summary());
-                    self.config.store(Arc::new(new_config));
-                    vec![Effect::Print(summary)]
-                }
+                Ok(val) => match Config::parse(&val) {
+                    Ok(new_config) => {
+                        let summary = format!("  config: {}", new_config.summary());
+                        self.config.store(Arc::new(new_config));
+                        vec![Effect::Print(summary)]
+                    }
+                    Err(e) => vec![Effect::Print(format!("  error: {e}"))],
+                },
                 Err(e) => {
                     vec![Effect::Print(format!("  error: {e}"))]
                 }
@@ -696,7 +698,7 @@ mod tests {
         let config = if let Some(ref cfg_str) = spec.config {
             let resolved = resolve_mx(cfg_str);
             match crate::parse_input(&resolved) {
-                Ok(json) => Config::parse(&json),
+                Ok(json) => Config::parse(&json).unwrap_or_else(|_| Config::empty()),
                 Err(_) => Config::empty(),
             }
         } else {
