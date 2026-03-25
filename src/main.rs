@@ -324,18 +324,19 @@ fn resolve_headers_for_expand(
     md: &Option<Value>,
     req_headers: &Option<Value>,
     merged: bool,
-) -> Map<String, Value> {
+) -> Result<Map<String, Value>, RequestError> {
     if merged {
         config.resolve_headers(method, url, md, req_headers)
+            .map_err(|e| RequestError::Structure { msg: e })
     } else {
         // Base: only expand shortcuts in request's own headers
-        if let Some(Value::Object(h)) = req_headers {
+        Ok(if let Some(Value::Object(h)) = req_headers {
             let mut h = h.clone();
             yttp::expand_headers(&mut h);
             h
         } else {
             Map::new()
-        }
+        })
     }
 }
 
@@ -346,7 +347,7 @@ pub fn expand_with_flags(line: &str, config: &Config, flags: &ExpandFlags) -> Re
 
     let mut headers = resolve_headers_for_expand(
         config, method, &url, &md, &req_headers, flags.merged,
-    );
+    )?;
 
     // Apply short headers if requested (not for curl)
     if flags.short && !flags.curl {
@@ -635,7 +636,8 @@ async fn execute(line: &str, client: &Client, idx: usize, config: &Config, concu
     let qarray_fn = resolve_qarray_fn(&req_qarray, config);
     yttp::append_query_to_url(&mut url, &query, &*qarray_fn).ok();
 
-    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers);
+    let merged_headers = config.resolve_headers(method, &url, &md, &req_headers)
+        .map_err(|e| RequestError::Structure { msg: e })?;
 
     let mut req = client.request(method.parse().unwrap(), &url);
 

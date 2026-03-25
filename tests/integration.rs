@@ -295,6 +295,49 @@ fn env_var_unset_errors() {
 }
 
 #[test]
+fn env_var_in_per_request_auth_array() {
+    let b = base();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.env("YURL_TEST_PASS", "secret");
+    let input = format!(r#"{{"g": "{b}/echo", "h": {{"a!": ["user", "$YURL_TEST_PASS"]}}, "1": "b"}}"#);
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let out = String::from_utf8(output.stdout).unwrap();
+    // [user, secret] → Basic dXNlcjpzZWNyZXQ= (base64 of "user:secret")
+    assert!(out.contains("Basic dXNlcjpzZWNyZXQ="), "per-request auth should expand $VAR: {out}");
+}
+
+#[test]
+fn env_var_unset_in_auth_array_errors() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(r#"{"h": {"a!": ["user", "$YURL_MISSING_PASS"]}}"#);
+    cmd.env_remove("YURL_MISSING_PASS");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child.stdin.take().unwrap().write_all(b"{\"g\": \"http://example.com\"}").unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "should exit with error: {stderr}");
+    assert!(stderr.contains("YURL_MISSING_PASS"), "should mention variable name: {stderr}");
+}
+
+#[test]
 fn env_var_empty_string_allowed() {
     let b = base();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));

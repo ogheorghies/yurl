@@ -214,7 +214,7 @@ impl Config {
         url: &str,
         md: &Option<Value>,
         request_headers: &Option<Value>,
-    ) -> Map<String, Value> {
+    ) -> Result<Map<String, Value>, String> {
         let mut merged = self.default_headers.clone();
 
         for rule in &self.rules {
@@ -227,13 +227,14 @@ impl Config {
 
         if let Some(Value::Object(h)) = request_headers {
             let mut h = h.clone();
+            expand_env_vars(&mut h)?;
             expand_headers(&mut h);
             for (k, v) in h {
                 merged.insert(k, v);
             }
         }
 
-        merged
+        Ok(merged)
     }
 
     /// Return the cache config from the first matching rule with a cache field.
