@@ -570,6 +570,14 @@
       assert:
         print: {contains: "unknown command"}
 
+# === .x with env var in header ===
+
+- name: .x expands env var in unmerged header
+  interaction:
+    - user: ".x {g: example.com, h: {X-Home: $HOME}}"
+      assert:
+        prefill: {not_contains: "$HOME"}
+
 # === .x with query array ===
 
 - name: .x expands query array with default comma

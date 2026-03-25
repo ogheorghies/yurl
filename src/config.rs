@@ -114,7 +114,7 @@ impl Config {
             .cloned()
             .unwrap_or_default();
 
-        expand_env_vars(&mut default_headers)?;
+        expand_env_in_headers(&mut default_headers)?;
         expand_headers(&mut default_headers);
 
         let mut default_outputs = Vec::new();
@@ -227,7 +227,7 @@ impl Config {
 
         if let Some(Value::Object(h)) = request_headers {
             let mut h = h.clone();
-            expand_env_vars(&mut h)?;
+            expand_env_in_headers(&mut h)?;
             expand_headers(&mut h);
             for (k, v) in h {
                 merged.insert(k, v);
@@ -298,7 +298,7 @@ fn parse_rule(val: &Value) -> Result<Rule, String> {
         .cloned()
         .unwrap_or_default();
 
-    expand_env_vars(&mut headers)?;
+    expand_env_in_headers(&mut headers)?;
     expand_headers(&mut headers);
 
     let concurrency = obj
@@ -370,7 +370,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 /// Expand `$VAR` references in header values from environment variables.
 /// Only pure `$VAR` values are expanded (the entire string is `$` + alphanumeric/underscore).
 /// Also expands inside arrays (e.g. `[user, $PASS]` for basic auth).
-fn expand_env_vars(headers: &mut Map<String, Value>) -> Result<(), String> {
+pub fn expand_env_in_headers(headers: &mut Map<String, Value>) -> Result<(), String> {
     for (_k, v) in headers.iter_mut() {
         expand_env_value(v)?;
     }

@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "yurl"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "arc-swap",
  "argh",

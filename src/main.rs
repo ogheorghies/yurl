@@ -330,13 +330,15 @@ fn resolve_headers_for_expand(
             .map_err(|e| RequestError::Structure { msg: e })
     } else {
         // Base: only expand shortcuts in request's own headers
-        Ok(if let Some(Value::Object(h)) = req_headers {
+        if let Some(Value::Object(h)) = req_headers {
             let mut h = h.clone();
+            config::expand_env_in_headers(&mut h)
+                .map_err(|e| RequestError::Structure { msg: e })?;
             yttp::expand_headers(&mut h);
-            h
+            Ok(h)
         } else {
-            Map::new()
-        })
+            Ok(Map::new())
+        }
     }
 }
 
