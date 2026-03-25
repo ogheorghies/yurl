@@ -41,6 +41,17 @@
   assert:
     stdout: "ok"
 
+# === Response body with special characters ===
+
+- name: JSON response with commas and newlines in value
+  rules:
+    - match: {g: /special}
+      reply: {s: 200, h: {ct!: j!}, b: {key: "value1, value2, \n value 3, value 4"}}
+  input: "{g: mx!/special}"
+  bin: yurl
+  assert:
+    stdout: {contains: ["key:", "value1"]}
+
 # === Empty and null values ===
 
 - name: POST with empty body
