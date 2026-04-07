@@ -156,9 +156,12 @@ impl Driver {
         match input {
             Input::CtrlD => vec![Effect::Exit],
             Input::CtrlC => {
-                // No request in flight — clear any pending prefill
-                self.prefill = None;
-                vec![]
+                // No request in flight — clear any pending prefill, otherwise hint exit
+                if self.prefill.take().is_some() {
+                    vec![]
+                } else {
+                    vec![Effect::Print("  (press Ctrl-D to exit)".to_string())]
+                }
             }
             Input::Up => self.handle_up(),
             Input::Down => self.handle_down(),
@@ -240,8 +243,12 @@ impl Driver {
         if let Some(effects) = self.try_expand_command(trimmed) {
             return effects;
         }
-        // Otherwise execute the edited text
-        vec![self.make_execute(trimmed.to_string())]
+        // Otherwise execute the edited text and record it in history
+        self.add_history(trimmed);
+        vec![
+            Effect::AddHistory(trimmed.to_string()),
+            self.make_execute(trimmed.to_string()),
+        ]
     }
 
     fn handle_command(&mut self, trimmed: &str, raw: &str) -> Vec<Effect> {

@@ -556,6 +556,48 @@
       assert:
         prefill: "g: example.com"
 
+- name: ".pop edited and sent is in history (regression: was missing)"
+  source:
+    - "{g: example.com}"
+  interaction:
+    - user: ".pop"
+      assert:
+        prefill: "{g: example.com}"
+    - user: "{g: edited.com}"
+      assert:
+        execute: "{g: edited.com}"
+    - user: up
+      assert:
+        prefill: "{g: edited.com}"
+
+- name: ".x editable form, edited and sent is in history (regression)"
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: "{g: typed-edit.com}"
+      assert:
+        execute: "{g: typed-edit.com}"
+    - user: up
+      assert:
+        prefill: "{g: typed-edit.com}"
+
+- name: "ctrl-c with no prefill prints exit hint (regression)"
+  interaction:
+    - user: ctrl-c
+      assert:
+        print: {contains: "Ctrl-D"}
+
+- name: "ctrl-c with prefill clears prefill (no hint)"
+  interaction:
+    - user: ".x {g: example.com}"
+      assert:
+        prefill: {contains: "get:"}
+    - user: ctrl-c
+      assert:
+        prefill: null
+        print: null
+
 # === Unknown commands ===
 
 - name: unknown dot command
