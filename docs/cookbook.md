@@ -73,8 +73,12 @@ g: https://httpbin.org/get
 file://body.out: b
 EOF
 
-# templated file path
-echo '{g: https://httpbin.org/get, file://./out/{{u.host}}/{{m}}.txt: b}' | jurl
+# templated file path — use block-style stdin so {{...}} doesn't collide
+# with flow-style YAML braces
+cat <<'EOF' | jurl
+g: https://httpbin.org/get
+file://./out/{{u.host}}/{{m}}.txt: b
+EOF
 ```
 
 ## Metadata
@@ -147,11 +151,18 @@ EOF
 ## Streaming
 
 ```bash
-# {{idx}} in path — auto-streams, no ?stream needed
-echo '
-{g: https://example.com/file1.bin}
-{g: https://example.com/file2.bin}
-' | jurl '{file://./downloads/{{idx}}.bin: b, 1: j(s)}'
+# {{idx}} in path — auto-streams, no ?stream needed.
+# Block-style YAML stdin lets you use {{idx}} as-is; in a flow-style
+# positional arg the '{' would need quoting (see note in README).
+cat <<'EOF' | jurl
+g: https://example.com/file1.bin
+file://./downloads/{{idx}}.bin: b
+1: j(s)
+---
+g: https://example.com/file2.bin
+file://./downloads/{{idx}}.bin: b
+1: j(s)
+EOF
 
 # static path — use ?stream to bypass buffering
 cat <<'EOF' | jurl

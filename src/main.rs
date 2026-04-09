@@ -59,23 +59,36 @@ fn has_method_key(val: &serde_json::Value) -> bool {
     }
 }
 
-/// Check if an arg looks like a request by examining its first non-blank line.
-/// Supports multi-line args (multiple JSONL lines or YAML docs in one arg).
-fn arg_is_request(arg: &str) -> bool {
-    let first_line = arg.lines().find(|l| !l.trim().is_empty());
-    match first_line {
-        Some(line) => {
-            let trimmed = line.trim();
-            // Try parsing the first line to check for method keys
-            if let Ok(parsed) = parse_input(trimmed) {
-                has_method_key(&parsed)
-            } else {
-                // Can't parse first line — treat as request (errors caught later)
-                true
+/// Classify a positional arg by examining its first non-blank line.
+///
+/// Two-level classification:
+///  1. Syntax: the first non-blank line must parse via `parse_input`. On
+///     failure, exit with a colored parse error (plus a flow-style quoting
+///     hint if the input looks like `{...}` containing `{{`).
+///  2. Schema: if parse succeeds, check for a method key.
+///
+/// Returns `Some(is_request)` for non-empty args, `None` for empty/whitespace.
+/// Exits the process on syntax error — does not return on that path.
+fn classify_arg(arg: &str) -> Option<bool> {
+    let first_line = arg.lines().find(|l| !l.trim().is_empty())?;
+    let trimmed = first_line.trim();
+    match parse_input(trimmed) {
+        Ok(parsed) => Some(has_method_key(&parsed)),
+        Err(e) => {
+            eprintln!("{}", e.display_colored());
+            if should_hint_flow_quoting(trimmed) {
+                eprintln!("  hint: keys containing '{{' in flow style need quoting, e.g. '{{\"path/{{{{idx}}}}\": value}}'");
             }
+            std::process::exit(1);
         }
-        None => false, // empty arg
     }
+}
+
+/// True if the input looks like flow-style YAML containing a templated key
+/// that would benefit from quoting — i.e. starts with `{` and contains `{{`
+/// somewhere after the opening brace.
+fn should_hint_flow_quoting(trimmed: &str) -> bool {
+    trimmed.starts_with('{') && trimmed[1..].contains("{{")
 }
 
 /// Classify positional args into config (optional, first) and requests.
@@ -89,19 +102,20 @@ fn classify_args(positional: Vec<String>) -> (Option<String>, Vec<String>) {
     let mut requests: Vec<String> = Vec::new();
 
     for arg in positional {
-        if arg_is_request(&arg) {
-            requests.push(arg);
-        } else {
-            // Config arg
-            if !requests.is_empty() {
-                eprintln!("  error: config must come before requests");
-                std::process::exit(1);
+        match classify_arg(&arg) {
+            Some(true) => requests.push(arg),
+            Some(false) | None => {
+                // Config arg (or empty — treat as config slot for consistency)
+                if !requests.is_empty() {
+                    eprintln!("  error: config must come before requests");
+                    std::process::exit(1);
+                }
+                if config.is_some() {
+                    eprintln!("  error: only one config argument allowed");
+                    std::process::exit(1);
+                }
+                config = Some(arg);
             }
-            if config.is_some() {
-                eprintln!("  error: only one config argument allowed");
-                std::process::exit(1);
-            }
-            config = Some(arg);
         }
     }
 
@@ -1813,5 +1827,59 @@ mod tests {
             }
             other => panic!("expected Structure error, got: {other}"),
         }
+    }
+
+    // === Classifier tests ===
+
+    #[test]
+    fn classify_arg_parseable_with_method_key_is_request() {
+        assert_eq!(classify_arg("{g: https://example.com}"), Some(true));
+        assert_eq!(classify_arg(r#"{"post": "https://example.com", "b": {}}"#), Some(true));
+        assert_eq!(classify_arg("put: https://example.com"), Some(true));
+    }
+
+    #[test]
+    fn classify_arg_parseable_without_method_key_is_config() {
+        assert_eq!(classify_arg("{api: https://example.com}"), Some(false));
+        assert_eq!(
+            classify_arg(r#"{"api": "https://example.com", "h": {"X-Debug": "1"}}"#),
+            Some(false),
+        );
+    }
+
+    #[test]
+    fn classify_arg_empty_or_whitespace_returns_none() {
+        assert_eq!(classify_arg(""), None);
+        assert_eq!(classify_arg("   "), None);
+        assert_eq!(classify_arg("\n\t\n"), None);
+    }
+
+    #[test]
+    fn classify_arg_multiline_uses_first_nonblank_line() {
+        // First non-blank line has method key → request
+        let arg = "\n  \n{g: https://example.com}\n{p: https://other.com}";
+        assert_eq!(classify_arg(arg), Some(true));
+
+        // First non-blank line is config
+        let arg = "\n{api: https://example.com}";
+        assert_eq!(classify_arg(arg), Some(false));
+    }
+
+    #[test]
+    fn hint_flow_quoting_fires_on_flow_with_nested_template() {
+        assert!(should_hint_flow_quoting("{file://{{idx}}.yaml: y(b)}"));
+        assert!(should_hint_flow_quoting("{api: foo, file://{{idx}}.json: j(b)}"));
+    }
+
+    #[test]
+    fn hint_flow_quoting_skips_block_style() {
+        // Block style: no leading `{` → no hint
+        assert!(!should_hint_flow_quoting("file://{{idx}}.yaml: y(b)"));
+    }
+
+    #[test]
+    fn hint_flow_quoting_skips_flow_without_template() {
+        assert!(!should_hint_flow_quoting("{api: https://example.com}"));
+        assert!(!should_hint_flow_quoting("{g: foo, 1: j(s)}"));
     }
 }

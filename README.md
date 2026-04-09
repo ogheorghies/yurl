@@ -114,6 +114,8 @@ cat batch.yaml | yurl '{h: {a!: tok}}'                # stdin + config
 
 Stdin reads JSONL (one per line) or YAML (`---` separated). Streaming — requests execute before EOF.
 
+Flow-style positional args (`'{...}'`) must quote any key containing `{`, because braces are structural in flow YAML. This matters for templated file paths like `{{idx}}`: use `'{"file://out/{{idx}}.txt": b, g: example.com}'`, or put the request in block-style stdin instead.
+
 | Key | Description |
 |-----|-------------|
 | method (`g`, `p`, `d`, `put`, `patch`, `head`, `options`, `trace`) | URL |

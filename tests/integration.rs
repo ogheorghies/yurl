@@ -357,3 +357,83 @@ fn env_var_empty_string_allowed() {
         .expect("failed to run jurl");
     assert!(output.status.success(), "empty var should succeed");
 }
+
+// --- Classifier regression tests ---
+
+/// Unparseable flow-style config arg with `{{...}}` must exit 1 with a
+/// parse error and a flow-quoting hint (not be silently routed as a request).
+/// Regression for: `.pop` returning config text when stdin was piped.
+#[test]
+fn classifier_rejects_unparseable_config_with_hint() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg("{file://{{idx}}.yaml: y(b)}");
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            drop(child.stdin.take()); // empty stdin
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "should exit with error: {stderr}");
+    assert!(
+        stderr.contains("parse error") || stderr.contains("invalid YAML"),
+        "stderr should contain a parse error: {stderr}"
+    );
+    assert!(
+        stderr.contains("quoting"),
+        "stderr should contain the flow-quoting hint: {stderr}"
+    );
+}
+
+/// Properly quoted flow-style config arg with `{{idx}}` in an output key
+/// must be classified as config, letting piped stdin flow through as
+/// the request source and reach the dispatcher.
+#[test]
+fn classifier_routes_quoted_config_and_stdin_request() {
+    let b = base();
+    let tmpdir = tempdir_path("yurl-classifier");
+    let out_path = format!("{tmpdir}/out-{{{{idx}}}}.txt");
+    let config = format!(r#"{{"api": "{b}", "file://{out_path}": "b"}}"#);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_jurl"));
+    cmd.arg(&config);
+    let output = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"{g: api!/ok}")
+                .unwrap();
+            child.wait_with_output()
+        })
+        .expect("failed to run jurl");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "should succeed: {stderr}");
+    // Config `api!` alias must have been applied, and the file output
+    // must have been written at the templated path.
+    let written = std::fs::read_to_string(format!("{tmpdir}/out-0.txt"))
+        .expect("expected file output at templated path");
+    assert!(
+        written.contains("ok-body"),
+        "file output should contain response body: {written}"
+    );
+    // Clean up
+    let _ = std::fs::remove_dir_all(&tmpdir);
+}
+
+fn tempdir_path(prefix: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("{prefix}-{nanos}"));
+    std::fs::create_dir_all(&path).unwrap();
+    path.to_string_lossy().to_string()
+}
